@@ -11,7 +11,8 @@ COPY services/platform/pyproject.toml /app/pyproject.toml
 COPY services/platform/uv.lock /app/uv.lock
 COPY services/platform/.python-version /app/.python-version
 RUN --mount=type=cache,target=/root/.cache/uv,sharing=shared uv sync --frozen --no-dev --no-install-project
-RUN useradd -u 1000 -m -d /home/briareus briareus
+RUN useradd -u 1000 -m -d /home/briareus briareus \
+    && install -d -m 0750 -o 1000 -g 1000 /run/briareus-platform
 # Copy owner-local source and immutable owner migration history.
 COPY services/platform/migrations/env.py /app/src/common/alembic_owners/platform/env.py
 COPY services/platform/migrations/versions/0001_platform_baseline.py /app/src/common/alembic_owners/platform/versions/0001_platform_baseline.py
@@ -48,4 +49,4 @@ WORKDIR /app/src
 USER 1000:1000
 EXPOSE 8000
 # Each service starts its OWN Alembic coordinator. Missing DB/grants fail closed.
-CMD ["uv", "run", "--frozen", "--no-sync", "--no-dev", "--project", "/app", "--directory", "/app/src", "python", "-m", "uvicorn", "projects.control_runtime:app", "--host", "0.0.0.0", "--port", "8000", "--no-proxy-headers"]
+CMD ["uv", "run", "--frozen", "--no-sync", "--no-dev", "--project", "/app", "--directory", "/app/src", "python", "-m", "projects.panel_server"]

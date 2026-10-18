@@ -21,6 +21,8 @@ from ._oidc_membership import CurrentPlatformUserSource, platform_membership_rou
 from ._oidc_native_login import native_login_router
 from ._oidc_native_start import native_login_start_router
 from ._oidc_origin_policy import PUBLIC_ORIGIN
+from ._platform_current_client import PrivatePlatformCurrentClient
+from ._platform_unix_peer import UnixPlatformPeer
 from ._rauthy_admin import RauthyAdminClient, RauthyAdminKeyRejected
 from ._rauthy_native_init import PinnedNativeRauthyInit
 
@@ -46,6 +48,14 @@ def create_control_panel_api(
     test_only_local_origin: str | None = None,
     native_init: PinnedNativeRauthyInit | None = None,
 ) -> FastAPI:
+    platform_peer = None
+    socket_path = os.environ.get("PLATFORM_PANEL_SOCKET", "")
+    signing_key = os.environ.get("PLATFORM_PANEL_SIGNING_KEY_FILE", "")
+    if membership_source is None and (socket_path or signing_key):
+        if not socket_path or not signing_key:
+            raise ValueError("Platform socket and service signing key must be configured together")
+        platform_peer = UnixPlatformPeer(socket_path=socket_path, signing_key_file=signing_key)
+        membership_source = PrivatePlatformCurrentClient(peer=platform_peer)
     if test_only_local_origin is not None and provider is None:
         # Test-only origin must be explicit and independently tied to a
         # disposable local provider; never enable through process ENV.
@@ -117,6 +127,8 @@ def create_control_panel_api(
         try:
             yield
         finally:
+            if platform_peer is not None:
+                await platform_peer.close()
             _app.state.rauthy_admin = None
             _app.state.rauthy_admin_state = None
             if service_admin is not None:

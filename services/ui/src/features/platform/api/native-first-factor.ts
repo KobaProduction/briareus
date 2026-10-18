@@ -10,7 +10,7 @@ import {solveRauthyPow,validRauthyPowChallenge} from "../model/rauthy-pow"
 export type NativeLoginOutcome =
   | {kind:"session_issued"}
   | {kind:"continuation_unavailable";stage:"otp_pending"|"webauthn_pending"|"tos_pending"|"account_update_required"|"client_mfa_required"}
-  | {kind:"rejected"|"unavailable"|"expired"|"rate_limited"|"cancelled"|"uncertain";code:string}
+  | {kind:"rejected"|"provider_rejected"|"unavailable"|"expired"|"rate_limited"|"cancelled"|"uncertain";code:string}
 
 const unsupportedStages=["otp_pending","webauthn_pending","tos_pending","account_update_required","client_mfa_required"] as const
 const requestHeaders={Accept:"application/json","Content-Type":"application/json"}
@@ -56,7 +56,7 @@ export function usableNativePowDeadline(
   return expires-Math.max(nowWallMs,observedWallMs+elapsed)>1500
 }
 function error(kind:NativeLoginOutcome["kind"],code:string):NativeLoginOutcome{
-  if(kind==="rejected"||kind==="unavailable"||kind==="expired"||
+  if(kind==="rejected"||kind==="provider_rejected"||kind==="unavailable"||kind==="expired"||
     kind==="rate_limited"||kind==="cancelled"||kind==="uncertain")return {kind,code}
   return {kind:"unavailable",code}
 }
@@ -151,6 +151,7 @@ export async function submitNativePasswordLogin(
     }
     const code=await readBoundedErrorCode(reply,signal,"NATIVE_LOGIN_UNAVAILABLE")
     if(signal.aborted)return {kind:"uncertain",code:"NATIVE_LOGIN_RESULT_UNCERTAIN"}
+    if(reply.status===401&&code==="NATIVE_PROVIDER_AUTH_REJECTED")return {kind:"provider_rejected",code}
     if(reply.status===401||reply.status===422)return {kind:"rejected",code}
     if(reply.status===429)return {kind:"rate_limited",code}
     return {kind:"unavailable",code}

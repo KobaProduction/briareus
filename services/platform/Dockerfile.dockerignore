@@ -63,6 +63,8 @@
 !services/platform/src/projects/_team_proof_reader.py
 !services/platform/src/projects/_team_source.py
 !services/platform/src/projects/control_runtime.py
+!services/platform/src/projects/panel_server.py
+!services/platform/src/projects/first_operator.py
 !services/platform/src/teams/__init__.py
 !services/platform/src/teams/_domain.py
 !services/platform/src/teams/_persistence.py

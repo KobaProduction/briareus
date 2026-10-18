@@ -1,4 +1,7 @@
 .git
+artifacts
+.serena
+.local
 .github
 .venv
 __pycache__

@@ -36,7 +36,7 @@ const password=ref("")
 const passwordVisible=ref(false)
 const loginBusy=ref(false)
 const cancellingLogin=ref(false)
-const loginMessage=ref<"invalid"|"mfa"|"rate_limited"|"expired"|"unavailable"|"unconfirmed"|"cancelled"|null>(null)
+const loginMessage=ref<"invalid"|"provider"|"mfa"|"rate_limited"|"expired"|"unavailable"|"unconfirmed"|"cancelled"|null>(null)
 let loginController:AbortController|null=null
 let lastCheckedAt = 0
 let expiryTimer: ReturnType<typeof setTimeout> | null = null
@@ -90,6 +90,7 @@ const labels = computed(() => locale.value === "ru" ? {
   signingIn: "Проверяем данные…",
   cancelLogin: "Отменить вход",
   loginInvalid: "Не удалось войти. Проверьте адрес почты и пароль.",
+  loginProvider: "Не удалось подтвердить вход. Повторите попытку; если ошибка сохраняется, обратитесь к администратору.",
   loginMfa: "Для аккаунта требуется дополнительная проверка. Этот способ входа пока не поддерживается.",
   loginRate: "Слишком много попыток. Повторите вход позже.",
   loginExpired: "Время проверки истекло. Попробуйте войти ещё раз.",
@@ -118,6 +119,7 @@ const labels = computed(() => locale.value === "ru" ? {
   signingIn: "Verifying credentials…",
   cancelLogin: "Cancel sign-in",
   loginInvalid: "Unable to sign in. Check your email and password.",
+  loginProvider: "Sign-in could not be verified. Try again; if the problem persists, contact your administrator.",
   loginMfa: "Your account requires an additional verification step that is not yet supported.",
   loginRate: "Too many attempts. Try again later.",
   loginExpired: "Sign-in verification expired. Try signing in again.",
@@ -159,6 +161,7 @@ async function submitLogin():Promise<void>{
     loginMessage.value=outcome.kind==="continuation_unavailable"?"mfa":
       outcome.kind==="rate_limited"?"rate_limited":
       outcome.kind==="expired"?"expired":
+      outcome.kind==="provider_rejected"?"provider":
       outcome.kind==="rejected"?"invalid":
       outcome.kind==="cancelled"?"cancelled":"unavailable"
   }catch{
@@ -189,6 +192,7 @@ async function cancelLogin():Promise<void>{
   }
 }
 const loginStatus=computed(()=>loginMessage.value==="invalid"?labels.value.loginInvalid:
+  loginMessage.value==="provider"?labels.value.loginProvider:
   loginMessage.value==="mfa"?labels.value.loginMfa:
   loginMessage.value==="rate_limited"?labels.value.loginRate:
   loginMessage.value==="expired"?labels.value.loginExpired:

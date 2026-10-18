@@ -67,7 +67,7 @@ function setSetting(field:ModuleSetting,value:string|number|boolean):void {
   if(field.kind==="toggle"){
     if(typeof value!=="boolean")return
   }else if(typeof value!=="string" && typeof value!=="number")return
-  values.value={...values.value,[field.key]:value}
+  values.value={...values.value,[field.key]:typeof value==="number"?String(value):value}
   touched.value=true
 }
 function selectedSetting(field:ModuleSetting):string|boolean {

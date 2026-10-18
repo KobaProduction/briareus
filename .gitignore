@@ -21,3 +21,4 @@ data/
 # Briareus deploy manifests are SOURCE, not runtime data
 artifacts/
 logs/
+.local/

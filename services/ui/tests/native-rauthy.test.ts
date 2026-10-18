@@ -160,6 +160,17 @@ async function nativeBrowserFixture(replies:Response[],test:(calls:{url:string;i
   }
 }
 describe("native password sign-in from explicit user action",()=>{
+  it("does not describe a masked provider failure as an incorrect password",async()=>{
+    await nativeBrowserFixture([
+      apiReply(200,nativeCapability),apiReply(201,nativeInit),
+      apiReply(200,{challenge:nativeChallenge(),authenticated:false}),
+      apiReply(401,{error:{code:"NATIVE_PROVIDER_AUTH_REJECTED"}}),
+    ],async calls=>{
+      expect(await submitNativePasswordLogin("fixture@example.invalid","fixture-only-password",
+        new AbortController().signal)).toEqual({kind:"provider_rejected",code:"NATIVE_PROVIDER_AUTH_REJECTED"})
+      expect(calls.filter(x=>x.url.endsWith("/first-factor"))).toHaveLength(1)
+    })
+  })
   it("sends only expected same-origin steps and never treats first factor as a User grant",async()=>{
     await nativeBrowserFixture([
       apiReply(200,nativeCapability),apiReply(201,nativeInit),
