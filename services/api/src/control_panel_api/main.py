@@ -65,10 +65,9 @@ def create_control_panel_api(
         or (test_only_local_origin is None and native_init.issuer != PUBLIC_ORIGIN + "/auth/v1")
     ):
         raise ValueError("native Rauthy owner must be independently configured for its exact realm")
-    # Product-native behavior derives from the already approved issuer/client.
-    # A Files bearer must have its exact source-owned resource intent BEFORE
-    # code issuance; an unregistered upstream client fails at Rauthy, not by
-    # accepting an unscoped token or guessing a resource from a user header.
+    # Human sign-in must not require a separately provisioned MCP resource.
+    # When Files is explicitly enabled, bind its exact resource BEFORE code
+    # issuance. Without it, the session proves identity only; Files stays closed.
     managed_provider = provider
     if managed_provider is None:
         issuer = os.environ.get("OIDC_ISSUER", "")
@@ -80,10 +79,15 @@ def create_control_panel_api(
                 issuer.rstrip("/") == PUBLIC_ORIGIN + "/auth/v1"
                 and client_id == "briareus-control-panel"
             )
+            resource_audience = os.environ.get("OIDC_RESOURCE_AUDIENCE") or None
+            if resource_audience is not None and (
+                not approved or resource_audience != PUBLIC_ORIGIN + "/hands/files/mcp"
+            ):
+                raise ValueError("OIDC resource must match the approved issuer/client/Files realm")
             managed_provider = RauthyOidcAdapter(
                 issuer=issuer,
                 client_id=client_id,
-                resource_audience=PUBLIC_ORIGIN + "/hands/files/mcp" if approved else None,
+                resource_audience=resource_audience,
             )
 
     # No browser cookie or User token can provision an admin API credential.
