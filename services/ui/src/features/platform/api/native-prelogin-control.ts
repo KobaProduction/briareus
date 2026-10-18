@@ -68,8 +68,12 @@ async function serverError(response:Response,signal:AbortSignal):Promise<string>
   }catch{return "NATIVE_UNAVAILABLE"}
 }
 
-/** Read an exact protocol declaration each time before allocating a pending
- * session, rather than assuming success from a previous provider Init. */
+/** Accept only the two exact advertised Backend v1 profiles:
+ * password-only [] and password+OTP ["otp"]. An OTP capability describes
+ * a possible server continuation, NEVER proof the specific user needs OTP,
+ * has supplied a valid password or owns a Platform role. All other names,
+ * duplicate entries and missing fields remain rejected before Init.
+ */
 export async function checkNativePrelogin(signal:AbortSignal):Promise<NativePreloginCapabilities>{
   if(signal.aborted)return {kind:"unavailable",code:"NATIVE_CAPABILITIES_CANCELLED"}
   try{
@@ -88,7 +92,9 @@ export async function checkNativePrelogin(signal:AbortSignal):Promise<NativePrel
     if(!body||!shape(body,["protocol","first_factor","pow","cancel","continuations"])||
       body.protocol!=="rauthy-native-v1"||body.first_factor!=="password"||
       body.pow!=="client-solved"||body.cancel!==true||
-      !Array.isArray(body.continuations)||body.continuations.length!==0){
+      !Array.isArray(body.continuations)||
+      !(body.continuations.length===0||
+        (body.continuations.length===1&&body.continuations[0]==="otp"))){
       return {kind:"invalid",code:"NATIVE_CAPABILITIES_INVALID"}
     }
     if(signal.aborted)return {kind:"unavailable",code:"NATIVE_CAPABILITIES_CANCELLED"}

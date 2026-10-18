@@ -130,7 +130,7 @@ describe("bounded source-only native Init replies",()=>{
 import {submitNativePasswordLogin,usableNativePowDeadline} from "../src/features/platform/api/native-first-factor"
 
 const nativeChallenge=()=>"1:10:"+(Math.floor(Date.now()/1000)+120)+":"+"A".repeat(16)+":"+"B".repeat(43)+":"
-const nativeCapability={protocol:"rauthy-native-v1",first_factor:"password",pow:"client-solved",cancel:true,continuations:[]}
+const nativeCapability={protocol:"rauthy-native-v1",first_factor:"password",pow:"client-solved",cancel:true,continuations:["otp"]}
 const nativeInit={stage:"first_factor_required",authenticated:false,expires_in:120}
 const nativeReceipt={stage:"authenticated",authenticated:true,authority:"rauthy",platform_membership_verified:false,permissions:[]}
 
@@ -182,6 +182,31 @@ describe("native password sign-in from explicit user action",()=>{
       expect(body.password).toBe("fixture-only-password")
       expect(body.pow).toMatch(/^1:10:\d{10}:[A-Z]{16}:[A-Z]{43}:\d+$/)
       expect(outcome).not.toHaveProperty("identity")
+    })
+  })
+  it("classifies offered email OTP HTTP202 as required MFA, never signed in",async()=>{
+    await nativeBrowserFixture([
+      apiReply(200,nativeCapability),apiReply(201,nativeInit),
+      apiReply(200,{challenge:nativeChallenge(),authenticated:false}),
+      apiReply(202,{stage:"otp_pending",authenticated:false,continuation_available:true,
+        methods:[{index:0,kind:"email"}]}),
+    ],async calls=>{
+      expect(await submitNativePasswordLogin("fixture@example.invalid","fixture-only-password",
+        new AbortController().signal)).toEqual({kind:"continuation_unavailable",stage:"otp_pending"})
+      expect(calls.map(call=>call.url)).toEqual([
+        "/api/v1/auth/capabilities","/api/v1/auth/start","/api/v1/auth/pow","/api/v1/auth/first-factor",
+      ])
+    })
+  })
+  it("rejects unknown or forged OTP continuation formats",async()=>{
+    await nativeBrowserFixture([
+      apiReply(200,nativeCapability),apiReply(201,nativeInit),
+      apiReply(200,{challenge:nativeChallenge(),authenticated:false}),
+      apiReply(202,{stage:"otp_pending",authenticated:false,continuation_available:true,
+        methods:[{index:0,kind:"webauthn"}]}),
+    ],async()=>{
+      expect(await submitNativePasswordLogin("fixture@example.invalid","fixture-only-password",
+        new AbortController().signal)).toEqual({kind:"unavailable",code:"NATIVE_CONTINUATION_INVALID"})
     })
   })
   it("returns unsupported MFA, not signed in, on Backend 409",async()=>{

@@ -120,6 +120,25 @@ export async function submitNativePasswordLogin(
       }
       return {kind:"uncertain",code:"NATIVE_LOGIN_RESPONSE_INVALID"}
     }
+    if(reply.status===202){
+      // Backend may now offer a private email OTP continuation. This v1
+      // Frontend has no supported OTP form yet, so do NOT silently treat 202
+      // as session issuance or fall back to an authenticated Panel.
+      const step=object(await readBoundedJsonResponse(reply,signal,4096))
+      if(signal.aborted)return {kind:"uncertain",code:"NATIVE_LOGIN_RESULT_UNCERTAIN"}
+      const methods=step?.methods
+      if(step&&exact(step,["stage","authenticated","continuation_available","methods"])&&
+        step.stage==="otp_pending"&&step.authenticated===false&&
+        step.continuation_available===true&&Array.isArray(methods)&&
+        methods.length>=1&&methods.length<=10&&
+        methods.every((item,index)=>{
+          const m=object(item)
+          return !!m&&exact(m,["index","kind"])&&m.index===index&&m.kind==="email"
+        })){
+        return {kind:"continuation_unavailable",stage:"otp_pending"}
+      }
+      return {kind:"unavailable",code:"NATIVE_CONTINUATION_INVALID"}
+    }
     if(reply.status===409){
       const continuation=object(await readBoundedJsonResponse(reply,signal,4096))
       if(continuation&&exact(continuation,["stage","authenticated","continuation_available","restart_required"])&&

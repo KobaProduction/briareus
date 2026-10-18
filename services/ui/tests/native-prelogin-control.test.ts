@@ -20,10 +20,22 @@ describe("Backend native prelogin capability and explicit cancellation",()=>{
     expect(options.redirect).toBe("error")
     expect(options.body).toBeUndefined()
   })
+  it("accepts only the exact server-announced OTP continuation without inferring login",async()=>{
+    let requests=0
+    globalThis.fetch=async()=>{requests++;return response(200,{...supported,continuations:["otp"]})}
+    expect(await checkNativePrelogin(new AbortController().signal)).toEqual({kind:"supported"})
+    expect(requests).toBe(1)
+  })
   it("rejects unknown/overbroad/partial version replies without promoting Init",async()=>{
     for(const payload of [
       {...supported,protocol:"rauthy-native-v2"},
       {...supported,continuations:["otp_pending"]},
+      {...supported,continuations:["webauthn"]},
+      {...supported,continuations:["otp","otp"]},
+      {...supported,continuations:["otp","webauthn"]},
+      {...supported,continuations:["OTP"]},
+      {...supported,continuations:["otp",null]},
+      {...supported,continuations:"otp"},
       {...supported,authenticated:true},
       {...supported,pow:"server-computed"},
       {...supported,cancel:false},

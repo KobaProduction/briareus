@@ -76,12 +76,20 @@ Even HTTP200 from the first-factor endpoint is not Platform User access.
 The component independently re-reads /api/v1/auth/session for the exact
 signed Rauthy issuer/client/expiry proof. Its parent independently checks a
 current /api/v1/auth/me User/Project membership proof before mounting
-protected actions. A required OTP/WebAuthn/ToS/account-update/client MFA
-returns Backend HTTP409 and remains unsupported until Backend accepts its
-atomic Valkey continuation with signed code/PKCE and private provider state.
-The UI never silently bypasses MFA or guesses a login result. Therefore
-password-only source wiring exists, but real Dev user/MFA/Project acceptance
-remains a separate mandatory gate.
+protected actions. Live Backend native capabilities now accept an optional
+email OTP continuation, and the UI accepts only the exact v1 declarations
+\`continuations:[]\` or \`continuations:["otp"]\`. This is a *provider
+capability*, never a claim that a particular user needs OTP, or that a
+password has been checked. Unknown/duplicate/overbroad continuations still
+fail before Init. The exact Backend HTTP202 \`otp_pending\` with one or more
+email methods is now classified as an MFA continuation (not a network error,
+a cookie, or authenticated Platform access). The native OTP start/finish BFF
+endpoints exist in current Backend source; the actual OTP entry/selection
+UI remains an independent pending integration and is not synthesized here.
+WebAuthn/ToS/account-update/client MFA or unsupported OTP variants remain
+fail-closed, as does Backend HTTP409 requiring restart. The UI never silently
+bypasses MFA or guesses a login result. Thus password-only source wiring
+exists, but real Dev user/MFA/Project acceptance remains a mandatory gate.
 
 A Rauthy PoW challenge has its OWN short expiry, distinct from the Init
 transaction. In a public anonymous Development precredential check on
