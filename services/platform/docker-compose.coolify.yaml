@@ -10,6 +10,9 @@ services:
     extends:
       file: docker-compose.yaml
       service: briareus-platform
+    volumes:
+      - panel-peer:/run/briareus-platform
+      - platform-state:/var/lib/briareus-platform
     environment:
       TZ: "${TZ:-UTC}"
       OTLP_ENDPOINT: "${OTLP_ENDPOINT:-}"
@@ -22,6 +25,14 @@ services:
       POSTGRES_DB: "briareus_platform"
       POSTGRES_USER: "${POSTGRES_USER:?}"
       POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:?}"
+      PLATFORM_MANAGED_PEER: "1"
+      PLATFORM_PANEL_SOCKET: /run/briareus-platform/platform/panel.sock
+      PLATFORM_PANEL_VERIFY_KEY_FILE: /run/briareus-platform/panel-signing.pub
+      RAUTHY_USERS_READ_KEY_FILE: /var/lib/briareus-platform/rauthy-users-read.key
+volumes:
+  panel-peer:
+    name: briareus-dev-panel-peer-3xshlpoghb9wcyhjgktlqzzp
+  platform-state: {}
 networks:
   briareus:
     external: true

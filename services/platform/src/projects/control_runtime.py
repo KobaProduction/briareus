@@ -32,11 +32,14 @@ def create_platform_app(
     panel_attestor: TrustedPanelContextAttestor | None = None,
     access_attestor: TrustedAccessProjectAttestor | None = None,
     users_read_api_key: SecretStr | None = None,
+    users_read_key_file: str | None = None,
     test_only_local_rauthy_ca_pem: str | None = None,
 ) -> FastAPI:
     if test_only_local_rauthy_ca_pem is not None and users_read_api_key is None:
         raise ValueError("disposable Rauthy status needs independently scoped local Users:read")
-    if users_read_api_key is not None and (
+    if users_read_api_key is not None and users_read_key_file is not None:
+        raise ValueError("Provider key sources are mutually exclusive")
+    if (users_read_api_key is not None or users_read_key_file is not None) and (
         membership is not None
         or trusted_ingress is None
         or (panel_attestor is None and access_attestor is None)
@@ -59,7 +62,7 @@ def create_platform_app(
         # authenticated ingress have succeeded. Failing any step aborts
         # startup instead of leaving a half-enabled current User endpoint.
         async with owner_lifespan(current_app):
-            if users_read_api_key is None:
+            if users_read_api_key is None and users_read_key_file is None:
                 current_membership = membership if trusted_ingress is not None else None
                 try:
                     yield
@@ -73,6 +76,7 @@ def create_platform_app(
                 current_membership = platform_user_membership_with_rauthy(
                     database=reader_database,
                     users_read_api_key=users_read_api_key,
+                    users_read_key_file=users_read_key_file,
                     test_only_local_ca_pem=test_only_local_rauthy_ca_pem,
                 )
                 yield

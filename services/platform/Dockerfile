@@ -12,7 +12,7 @@ COPY services/platform/uv.lock /app/uv.lock
 COPY services/platform/.python-version /app/.python-version
 RUN --mount=type=cache,target=/root/.cache/uv,sharing=shared uv sync --frozen --no-dev --no-install-project
 RUN useradd -u 1000 -m -d /home/briareus briareus \
-    && install -d -m 0750 -o 1000 -g 1000 /run/briareus-platform
+    && install -d -m 0750 -o 1000 -g 1000 /run/briareus-platform /var/lib/briareus-platform
 # Copy owner-local source and immutable owner migration history.
 COPY services/platform/migrations/env.py /app/src/common/alembic_owners/platform/env.py
 COPY services/platform/migrations/versions/0001_platform_baseline.py /app/src/common/alembic_owners/platform/versions/0001_platform_baseline.py

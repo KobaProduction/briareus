@@ -7,6 +7,13 @@ services:
     extends:
       file: docker-compose.yaml
       service: briareus-control-panel-api
+    user: "1001:1000"
+    depends_on:
+      panel-peer-init:
+        condition: service_completed_successfully
+    volumes:
+      - panel-peer:/run/briareus-platform:ro
+      - panel-keys:/var/lib/briareus-panel:ro
     environment:
       TZ: "${TZ:-UTC}"
       OIDC_ISSUER: "${OIDC_ISSUER:-}"
@@ -15,6 +22,25 @@ services:
       OIDC_SESSION_VALKEY_PASSWORD: "${OIDC_SESSION_VALKEY_PASSWORD}"
       # Keep simple ${VAR}: Coolify v4.4.6 injects raw secrets for ${VAR:-}.
       RAUTHY_ADMIN_API_KEY: "${RAUTHY_ADMIN_API_KEY}"
+      PLATFORM_PANEL_SOCKET: /run/briareus-platform/platform/panel.sock
+      PLATFORM_PANEL_SIGNING_KEY_FILE: /var/lib/briareus-panel/signing.key
+  panel-peer-init:
+    build:
+      context: ../..
+      dockerfile: services/api/Dockerfile
+    user: "0:0"
+    restart: "no"
+    network_mode: none
+    entrypoint: ["/app/.venv/bin/python", "-m", "control_panel_api.peer_bootstrap"]
+    cap_drop: [ALL]
+    cap_add: [CHOWN, FOWNER, DAC_OVERRIDE]
+    volumes:
+      - panel-peer:/run/briareus-platform
+      - panel-keys:/var/lib/briareus-panel
+volumes:
+  panel-peer:
+    name: briareus-dev-panel-peer-3xshlpoghb9wcyhjgktlqzzp
+  panel-keys: {}
 networks:
   briareus:
     external: true

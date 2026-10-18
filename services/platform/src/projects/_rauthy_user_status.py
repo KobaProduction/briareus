@@ -16,8 +16,10 @@ import asyncio
 import json
 import re
 import ssl
+import stat
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from typing import Protocol
 from urllib.error import HTTPError, URLError
 from urllib.request import (
@@ -160,6 +162,27 @@ def _without_duplicate_keys(pairs: list[tuple[str, object]]) -> dict[str, object
     return parsed
 
 
+class FileRauthyUsersTransport:
+    """Read an owner-provisioned key lazily, never from request data or ENV."""
+
+    def __init__(self, key_file: str) -> None:
+        if key_file != "/var/lib/briareus-platform/rauthy-users-read.key":
+            raise ValueError("Exact Platform-owned provider key file required")
+        self.path = Path(key_file)
+
+    def _key(self) -> SecretStr:
+        info = self.path.lstat()
+        if not stat.S_ISREG(info.st_mode) or info.st_uid != 1000 or info.st_mode & 0o077:
+            raise RauthyUserStatusUnavailable("Platform provider key is not privately provisioned")
+        if not 1 <= info.st_size <= 4096:
+            raise RauthyUserStatusUnavailable("Platform provider key size invalid")
+        return SecretStr(self.path.read_text().strip())
+
+    async def read_user(self, *, subject: str) -> PrivateUserResponse:
+        key = await asyncio.to_thread(self._key)
+        return await FixedRauthyUsersTransport(users_read_api_key=key).read_user(subject=subject)
+
+
 class CurrentRauthyUserStatusReader:
     """Return only exact enabled/current status; discard all provider PII."""
 
@@ -239,15 +262,23 @@ class CurrentRauthyUserStatusReader:
 def platform_user_membership_with_rauthy(
     *,
     database: PlatformDatabase,
-    users_read_api_key: SecretStr,
+    users_read_api_key: SecretStr | None = None,
+    users_read_key_file: str | None = None,
     test_only_local_ca_pem: str | None = None,
 ) -> PlatformOidcMembershipProjection:
     """Construct a source-qualified Platform projection, never auto-create it."""
-    status_reader = CurrentRauthyUserStatusReader(
-        private_transport=FixedRauthyUsersTransport(
+    if (users_read_api_key is None) == (users_read_key_file is None):
+        raise ValueError("Exactly one owner-provisioned provider key source required")
+    private_transport = (
+        FileRauthyUsersTransport(users_read_key_file)
+        if users_read_key_file is not None
+        else FixedRauthyUsersTransport(
             users_read_api_key=users_read_api_key,
             test_only_local_ca_pem=test_only_local_ca_pem,
-        ),
+        )
+    )
+    status_reader = CurrentRauthyUserStatusReader(
+        private_transport=private_transport,
         test_only_local_issuer=test_only_local_ca_pem is not None,
     )
     links = PlatformCurrentSubjectLinkReader(

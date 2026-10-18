@@ -11,6 +11,7 @@ import os
 import socket
 import stat
 import struct
+import time
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from uuid import UUID
@@ -37,12 +38,20 @@ from .control_runtime import create_platform_app
 class UnixPanelAuthority:
     def __init__(self, socket_path: str, public_key_file: str) -> None:
         self.path = socket_path
-        key = serialization.load_pem_public_key(Path(public_key_file).read_bytes())
+        self.public_key_file = public_key_file
+        self.key: Ed25519PublicKey | None = None
+
+    def verification_key(self) -> Ed25519PublicKey:
+        if self.key is not None:
+            return self.key
+        key = serialization.load_pem_public_key(Path(self.public_key_file).read_bytes())
         if not isinstance(key, Ed25519PublicKey):
             raise ValueError("Panel service verification requires Ed25519")
         self.key = key
+        return key
 
     async def verify_running_ingress(self) -> VerifiedOwnerIngress:
+        await asyncio.to_thread(self.verification_key)
         info = os.stat(self.path)
         if not stat.S_ISSOCK(info.st_mode) or info.st_uid != 1000 or info.st_mode & 0o007:
             raise ValueError("Private Platform socket unavailable")
@@ -65,7 +74,7 @@ class UnixPanelAuthority:
                 raise ValueError("Invalid delegation header")
             claims = jwt.decode(
                 token,
-                self.key,
+                await asyncio.to_thread(self.verification_key),
                 algorithms=["EdDSA"],
                 issuer="briareus:control-panel-api",
                 audience="briareus:platform",
@@ -128,8 +137,15 @@ class UnixPeerProtocol(H11Protocol):
 def serve() -> None:
     path = os.environ["PLATFORM_PANEL_SOCKET"]
     authority = UnixPanelAuthority(path, os.environ["PLATFORM_PANEL_VERIFY_KEY_FILE"])
-    key = SecretStr(Path(os.environ["RAUTHY_USERS_READ_KEY_FILE"]).read_text().strip())
+    key_file = os.environ["RAUTHY_USERS_READ_KEY_FILE"]
+    managed = os.environ.get("PLATFORM_MANAGED_PEER") == "1"
+    key = None if managed else SecretStr(Path(key_file).read_text().strip())
     target = Path(path)
+    # Independently deployed API init owns the shared public-key directory.
+    # No cross-application depends_on or peer restart is performed here.
+    deadline = time.monotonic() + 120
+    while not target.parent.is_dir() and time.monotonic() < deadline:
+        time.sleep(1)
     if target.exists():
         if not target.is_socket() or target.stat().st_uid != os.getuid():
             raise ValueError("Refusing to replace foreign Platform socket")
@@ -144,7 +160,10 @@ def serve() -> None:
         tcp.bind(("0.0.0.0", 8000))
         tcp.listen(128)
         app = create_platform_app(
-            trusted_ingress=authority, panel_attestor=authority, users_read_api_key=key
+            trusted_ingress=authority,
+            panel_attestor=authority,
+            users_read_api_key=key,
+            users_read_key_file=key_file if managed else None,
         )
         uvicorn.Server(
             uvicorn.Config(app, http=UnixPeerProtocol, proxy_headers=False, access_log=False)
