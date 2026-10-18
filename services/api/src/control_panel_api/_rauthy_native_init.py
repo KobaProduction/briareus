@@ -7,15 +7,19 @@ MUST NEVER be sent to the browser or a shared/cross-user HTTP client.
 
 from __future__ import annotations
 
+import logging
+import re
 import ssl
+from dataclasses import replace
 from datetime import UTC, datetime
 
 import httpx
+from pydantic import SecretStr
 
 from ._api_paths import REGISTERED_RAUTHY_CALLBACK_PATH
 from ._native_credentials import NativeFirstFactorRequest
 from ._oidc import _pkce_s256
-from ._oidc_browser import PrivateNativePending
+from ._oidc_browser import PrivateNativeOtpPending, PrivateNativePending
 from ._oidc_origin_policy import (
     LOCAL_RAUTHY_CLIENT,
     LOCAL_RAUTHY_ISSUER,
@@ -26,9 +30,16 @@ from ._rauthy_native_protocol import (
     NativeProviderProtocolUnavailable,
     PrivateNativeInitSession,
     PrivateNativeLoginStep,
+    PrivateNativeOtpStart,
     interpret_native_authorize,
+    interpret_native_otp_finish,
+    interpret_native_otp_start,
+    merge_native_provider_cookies,
+    native_provider_csrf,
     parse_native_session_init,
 )
+
+_RESULT_LOG = logging.getLogger("briareus.backend.rauthy_native")
 
 
 async def _bounded_native_reply(
@@ -37,9 +48,10 @@ async def _bounded_native_reply(
     *,
     headers: dict[str, str],
     limit: int,
+    json_payload: dict[str, object] | None = None,
 ) -> tuple[int, httpx.Headers, bytes]:
     """Observe an upstream reply without eagerly buffering unbounded bytes."""
-    async with client.stream("POST", url, headers=headers) as response:
+    async with client.stream("POST", url, headers=headers, json=json_payload) as response:
         result = bytearray()
         async for part in response.aiter_bytes():
             if len(part) > limit - len(result):
@@ -206,18 +218,149 @@ class PinnedNativeRauthyInit:
                     != "application/json"
                 ):
                     raise NativeProviderProtocolUnavailable("native challenge media type invalid")
-                return interpret_native_authorize(
-                    status_code=response.status_code,
-                    headers=dict(response.headers),
-                    body=bytes(body),
-                    expected_callback=callback,
-                    expected_state=pending.state,
-                    expected_issuer=self.issuer + "/",
-                    now=began,
+                try:
+                    step = interpret_native_authorize(
+                        status_code=response.status_code,
+                        headers=dict(response.headers),
+                        body=bytes(body),
+                        expected_callback=callback,
+                        expected_state=pending.state,
+                        expected_issuer=self.issuer + "/",
+                        now=began,
+                    )
+                except NativeProviderProtocolUnavailable:
+                    # No provider-provided bodies, locations, OAuth state,
+                    # account identifiers, cookies, CSRF or tokens in logs.
+                    _RESULT_LOG.warning(
+                        "native_rauthy_first_factor http_status=%d result=%s",
+                        response.status_code,
+                        "invalid_provider_response",
+                    )
+                    raise
+                # Privacy-safe status boundary: fixed classifier and numeric
+                # status ONLY. No request payload, email, password, cookie,
+                # CSRF, PoW, bearer, OAuth callback or provider error body.
+                _RESULT_LOG.info(
+                    "native_rauthy_first_factor http_status=%d result=%s",
+                    response.status_code,
+                    step.state,
                 )
+                if step.state == "otp_pending":
+                    return replace(
+                        step,
+                        provider_cookie=merge_native_provider_cookies(
+                            original=pending.provider_cookie,
+                            updates=tuple(response.headers.get_list("set-cookie")),
+                        ),
+                        csrf_token=native_provider_csrf(
+                            original=pending.csrf, headers=response.headers
+                        ),
+                    )
+                return step
         except (httpx.HTTPError, UnicodeError, ValueError):
+            _RESULT_LOG.warning("native_rauthy_first_factor result=transport_unavailable")
             raise NativeProviderProtocolUnavailable(
                 "native first-factor provider unavailable"
             ) from None
         finally:
             payload.clear()
+
+    async def otp_start(
+        self, *, pending: PrivateNativeOtpPending
+    ) -> tuple[PrivateNativeOtpStart, SecretStr, SecretStr]:
+        """Rauthy official one-time OTP start, only server-held LOGIN purpose."""
+        original = pending.original
+        if (
+            original.issuer != self.issuer
+            or original.client_id != self.client_id
+            or original.expires_at <= datetime.now(UTC)
+            or pending.login_code is None
+            or pending.selected_otp_id is None
+            or pending.provider_cookie is None
+        ):
+            raise NativeProviderProtocolUnavailable("OTP start original Rauthy context unavailable")
+        try:
+            async with httpx.AsyncClient(
+                verify=self._tls, trust_env=False, follow_redirects=False, timeout=5.0
+            ) as client:
+                status, headers, raw = await _bounded_native_reply(
+                    client,
+                    self.issuer + "/users/otp_start",
+                    headers={
+                        "Accept": "application/json",
+                        "X-CSRF-Token": original.csrf.get_secret_value(),
+                        "Cookie": pending.provider_cookie.get_secret_value(),
+                    },
+                    limit=8192,
+                    json_payload={
+                        "otp_id": pending.selected_otp_id.get_secret_value(),
+                        "purpose": {"Login": pending.login_code.get_secret_value()},
+                    },
+                )
+                challenge = interpret_native_otp_start(
+                    status_code=status, content_type=headers.get("content-type", ""), body=raw
+                )
+                if any(
+                    len(headers.get_list(name)) > 1
+                    for name in ("content-type", "x-csrf-token", "location")
+                ):
+                    raise NativeProviderProtocolUnavailable("ambiguous Rauthy OTP start headers")
+                return (
+                    challenge,
+                    merge_native_provider_cookies(
+                        original=pending.provider_cookie,
+                        updates=tuple(headers.get_list("set-cookie")),
+                    ),
+                    native_provider_csrf(original=original.csrf, headers=headers),
+                )
+        except httpx.HTTPError:
+            raise NativeProviderProtocolUnavailable("Rauthy OTP start unavailable") from None
+
+    async def otp_finish(
+        self, *, pending: PrivateNativeOtpPending, otp_value: str
+    ) -> PrivateNativeLoginStep:
+        """Consume provider OTP code once; signed PKCE remains independent."""
+        original = pending.original
+        if (
+            original.issuer != self.issuer
+            or original.client_id != self.client_id
+            or original.expires_at <= datetime.now(UTC)
+            or pending.finish_code is None
+            or pending.provider_cookie is None
+            or not isinstance(otp_value, str)
+            or re.fullmatch(r"[0-9]{6,8}", otp_value, re.ASCII) is None
+        ):
+            raise NativeProviderProtocolUnavailable("OTP finish original state unavailable")
+        try:
+            async with httpx.AsyncClient(
+                verify=self._tls, trust_env=False, follow_redirects=False, timeout=8.0
+            ) as client:
+                status, headers, raw = await _bounded_native_reply(
+                    client,
+                    self.issuer + "/users/otp_finish",
+                    headers={
+                        "Accept": "application/json",
+                        "X-CSRF-Token": original.csrf.get_secret_value(),
+                        "Cookie": pending.provider_cookie.get_secret_value(),
+                    },
+                    limit=8192,
+                    json_payload={
+                        "code": pending.finish_code.get_secret_value(),
+                        "otp_code": otp_value,
+                    },
+                )
+                if any(
+                    len(headers.get_list(name)) > 1
+                    for name in ("location", "content-type", "x-csrf-token")
+                ):
+                    raise NativeProviderProtocolUnavailable("ambiguous Rauthy OTP finish")
+                return interpret_native_otp_finish(
+                    status_code=status,
+                    headers=dict(headers),
+                    body=raw,
+                    expected_callback=self.callback,
+                    expected_state=original.state,
+                    expected_issuer=self.issuer + "/",
+                )
+        except httpx.HTTPError:
+            raise NativeProviderProtocolUnavailable("Rauthy OTP finish unavailable") from None

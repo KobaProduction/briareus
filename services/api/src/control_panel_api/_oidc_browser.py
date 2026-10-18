@@ -21,7 +21,16 @@ from valkey.asyncio import Valkey
 from valkey.exceptions import ValkeyError
 
 from ._api_paths import AUTH_API_PREFIX, REGISTERED_RAUTHY_CALLBACK_PATH
-from ._native_state_scripts import CANCEL_LOGIN, CLAIM_INIT, COMPLETE_LOGIN, CONFIRM_POW
+from ._native_state_scripts import (
+    CANCEL_LOGIN,
+    CLAIM_INIT,
+    CLAIM_OTP_FINISH,
+    CLAIM_OTP_START,
+    COMPLETE_LOGIN,
+    CONFIRM_OTP_START,
+    CONFIRM_POW,
+    STAGE_OTP,
+)
 from ._oidc import OidcProviderUnavailable, RauthyOidcAdapter, _unique_oidc_fields
 from ._oidc_id_token import (
     OidcIdentityKeysUnavailable,
@@ -106,6 +115,18 @@ class PrivateNativePending:
     expires_at: datetime
     claim_id: SecretStr
     resource_audience: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class PrivateNativeOtpPending:
+    """Server-held OTP continuation; never a signed identity or public DTO."""
+
+    original: PrivateNativePending
+    attempt_id: SecretStr
+    selected_otp_id: SecretStr | None = None
+    login_code: SecretStr | None = None
+    finish_code: SecretStr | None = None
+    provider_cookie: SecretStr | None = None
 
 
 class OidcBrowserSessionStore:
@@ -401,6 +422,249 @@ class OidcBrowserSessionStore:
         if type(result) is not int or result != 1:
             return None
         return ticket, seconds
+
+    async def stage_native_otp(
+        self,
+        *,
+        pending: PrivateNativePending,
+        login_code: SecretStr,
+        methods: tuple[tuple[str, SecretStr], ...],
+        provider_cookie: SecretStr,
+        csrf_token: SecretStr,
+    ) -> bool:
+        """Atomically escrow the original signed-code context after first factor.
+
+        OTP methods/IdP code/PKCE/provider cookies remain PRIVATE in Valkey.
+        Browser only receives method indexes and human-readable kinds.
+        Cancellation can delete this state before/after the CAS.
+        """
+        if (
+            not isinstance(login_code, SecretStr)
+            or re.fullmatch(r"[A-Za-z0-9_-]{16,256}", login_code.get_secret_value(), re.ASCII)
+            is None
+            or not 1 <= len(methods) <= 10
+            or any(
+                kind != "email"
+                or not isinstance(otp_id, SecretStr)
+                or re.fullmatch(r"[A-Za-z0-9_-]{1,128}", otp_id.get_secret_value(), re.ASCII)
+                is None
+                for kind, otp_id in methods
+            )
+            or not isinstance(provider_cookie, SecretStr)
+            or not isinstance(csrf_token, SecretStr)
+            or re.fullmatch(r"[A-Za-z0-9]{32}", csrf_token.get_secret_value(), re.ASCII) is None
+            or pending.expires_at <= datetime.now(UTC)
+        ):
+            return False
+        record = {
+            "stage": "otp_ready",
+            "claim": pending.claim_id.get_secret_value(),
+            "deadline_ms": int(pending.expires_at.timestamp() * 1000),
+            "state": pending.state,
+            "issuer": pending.issuer,
+            "client_id": pending.client_id,
+            "nonce": pending.nonce,
+            "verifier": pending.verifier.get_secret_value(),
+            "csrf": csrf_token.get_secret_value(),
+            "provider_cookie": provider_cookie.get_secret_value(),
+            "resource_audience": pending.resource_audience,
+            "otp_login_code": login_code.get_secret_value(),
+            "methods": [
+                {"kind": kind, "id": otp_id.get_secret_value()} for kind, otp_id in methods
+            ],
+        }
+        try:
+            result = await self._client.eval(
+                STAGE_OTP,
+                1,
+                self._key("native-init", pending.state),
+                pending.claim_id.get_secret_value(),
+                json.dumps(record, separators=(",", ":")),
+            )
+        except ValkeyError:
+            raise OidcSessionStoreUnavailable("native OTP escrow unavailable") from None
+        return type(result) is int and result == 1
+
+    @staticmethod
+    def _private_otp_pending(
+        raw: str, *, state: str, issuer: str, client_id: str, attempt_id: SecretStr
+    ) -> PrivateNativeOtpPending | None:
+        if not isinstance(raw, str) or len(raw) > 16_384:
+            return None
+        try:
+            data = json.loads(raw, object_pairs_hook=_unique_oidc_fields)
+            if not isinstance(data, dict):
+                return None
+            deadline = datetime.fromtimestamp(data["deadline_ms"] / 1000, UTC)
+            validate_files_resource_intent(
+                issuer=issuer,
+                client_id=client_id,
+                resource_audience=data.get("resource_audience"),
+            )
+            for name in ("claim", "nonce", "verifier"):
+                if not isinstance(data.get(name), str) or _TOKEN.fullmatch(data[name]) is None:
+                    return None
+            if (
+                deadline <= datetime.now(UTC)
+                or data.get("state") != state
+                or data.get("issuer") != issuer
+                or data.get("client_id") != client_id
+                or not isinstance(data.get("csrf"), str)
+                or re.fullmatch(r"[A-Za-z0-9]{32}", data["csrf"], re.ASCII) is None
+                or not isinstance(data.get("provider_cookie"), str)
+                or not data["provider_cookie"].startswith("__Host-RauthySession=")
+                or len(data["provider_cookie"]) > 12_288
+                or data.get("stage") not in {"otp_ready", "otp_started"}
+            ):
+                return None
+            if data["stage"] == "otp_ready":
+                methods = data.get("methods")
+                otp_id = data.get("selected_otp_id")
+                if (
+                    not isinstance(methods, list)
+                    or not 1 <= len(methods) <= 10
+                    or not all(
+                        isinstance(method, dict)
+                        and set(method) == {"kind", "id"}
+                        and method["kind"] == "email"
+                        and isinstance(method["id"], str)
+                        and re.fullmatch(r"[A-Za-z0-9_-]{1,128}", method["id"], re.ASCII)
+                        is not None
+                        for method in methods
+                    )
+                    or not isinstance(otp_id, str)
+                    or otp_id not in [method["id"] for method in methods]
+                    or not isinstance(data.get("otp_login_code"), str)
+                    or re.fullmatch(r"[A-Za-z0-9_-]{16,256}", data["otp_login_code"], re.ASCII)
+                    is None
+                    or "otp_code" in data
+                ):
+                    return None
+            else:
+                if (
+                    not isinstance(data.get("otp_code"), str)
+                    or re.fullmatch(r"[A-Za-z0-9]{48}", data["otp_code"], re.ASCII) is None
+                    or type(data.get("otp_expires_ms")) is not int
+                    or data["otp_expires_ms"] <= int(datetime.now(UTC).timestamp() * 1000)
+                    or any(k in data for k in ("methods", "selected_otp_id", "otp_login_code"))
+                ):
+                    return None
+            original = PrivateNativePending(
+                state=state,
+                issuer=issuer,
+                client_id=client_id,
+                nonce=data["nonce"],
+                verifier=SecretStr(data["verifier"]),
+                csrf=SecretStr(data["csrf"]),
+                provider_cookie=SecretStr(data["provider_cookie"]),
+                expires_at=deadline,
+                claim_id=SecretStr(data["claim"]),
+                resource_audience=data.get("resource_audience"),
+            )
+            return PrivateNativeOtpPending(
+                original=original,
+                attempt_id=attempt_id,
+                selected_otp_id=SecretStr(data["selected_otp_id"])
+                if "selected_otp_id" in data
+                else None,
+                login_code=SecretStr(data["otp_login_code"]) if "otp_login_code" in data else None,
+                finish_code=SecretStr(data["otp_code"]) if "otp_code" in data else None,
+                provider_cookie=SecretStr(data["provider_cookie"]),
+            )
+        except (ValueError, TypeError, KeyError, OverflowError, OSError):
+            return None
+
+    async def claim_native_otp_start(
+        self, *, state: str, issuer: str, client_id: str, method_index: int
+    ) -> PrivateNativeOtpPending | None:
+        if type(method_index) is not int or not 0 <= method_index <= 9:
+            return None
+        attempt = secrets.token_urlsafe(32)
+        try:
+            raw = await self._client.eval(
+                CLAIM_OTP_START,
+                1,
+                self._key("native-init", state),
+                issuer,
+                client_id,
+                method_index,
+                attempt,
+            )
+        except ValkeyError:
+            raise OidcSessionStoreUnavailable("native OTP start claim unavailable") from None
+        if not isinstance(raw, str) or len(raw) > 16_384:
+            return None
+        # Returned payload was BEFORE mutation: selected ID is in methods.
+        try:
+            data = json.loads(raw, object_pairs_hook=_unique_oidc_fields)
+            otp_id = data["methods"][method_index]["id"]
+            data["selected_otp_id"] = otp_id
+        except (ValueError, TypeError, IndexError, KeyError):
+            return None
+        return self._private_otp_pending(
+            json.dumps(data, separators=(",", ":")),
+            state=state,
+            issuer=issuer,
+            client_id=client_id,
+            attempt_id=SecretStr(attempt),
+        )
+
+    async def confirm_native_otp_start(
+        self,
+        *,
+        challenge: PrivateNativeOtpPending,
+        otp_code: SecretStr,
+        otp_expires_at: int,
+        provider_cookie: SecretStr,
+        csrf_token: SecretStr,
+    ) -> bool:
+        if (
+            challenge.selected_otp_id is None
+            or challenge.login_code is None
+            or not isinstance(otp_code, SecretStr)
+            or re.fullmatch(r"[A-Za-z0-9]{48}", otp_code.get_secret_value(), re.ASCII) is None
+            or type(otp_expires_at) is not int
+            or not isinstance(provider_cookie, SecretStr)
+            or not isinstance(csrf_token, SecretStr)
+            or re.fullmatch(r"[A-Za-z0-9]{32}", csrf_token.get_secret_value(), re.ASCII) is None
+        ):
+            return False
+        try:
+            result = await self._client.eval(
+                CONFIRM_OTP_START,
+                1,
+                self._key("native-init", challenge.original.state),
+                challenge.attempt_id.get_secret_value(),
+                otp_code.get_secret_value(),
+                otp_expires_at * 1000,
+                provider_cookie.get_secret_value(),
+                csrf_token.get_secret_value(),
+            )
+        except ValkeyError:
+            raise OidcSessionStoreUnavailable("native OTP start confirmation unavailable") from None
+        return type(result) is int and result == 1
+
+    async def claim_native_otp_finish(
+        self, *, state: str, issuer: str, client_id: str
+    ) -> PrivateNativeOtpPending | None:
+        attempt = secrets.token_urlsafe(32)
+        try:
+            raw = await self._client.eval(
+                CLAIM_OTP_FINISH,
+                1,
+                self._key("native-init", state),
+                issuer,
+                client_id,
+            )
+        except ValkeyError:
+            raise OidcSessionStoreUnavailable("native OTP finish claim unavailable") from None
+        return self._private_otp_pending(
+            raw,
+            state=state,
+            issuer=issuer,
+            client_id=client_id,
+            attempt_id=SecretStr(attempt),
+        )
 
     async def delete_native_init(self, *, state: str) -> None:
         """Cancel init/claim OR its completed session before clearing browser state."""

@@ -290,7 +290,8 @@ class NativeChallengeDecoderTests(unittest.TestCase):
 
     def test_errors_are_not_success_or_signed_identity(self) -> None:
         self.assertEqual(classify(401).state, "credentials_rejected")
-        self.assertEqual(classify(403).state, "request_rejected")
+        self.assertEqual(classify(400).state, "request_rejected")
+        self.assertEqual(classify(403).state, "provider_access_denied")
         for status in (201, 204, 302, 500, 503):
             with (
                 self.subTest(status=status),

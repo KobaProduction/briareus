@@ -58,6 +58,8 @@ class NativeProviderFixture(ProviderFixture):
     def __init__(self) -> None:
         super().__init__()
         self.mode = "success"
+        self.otp_starts = 0
+        self.otp_finishes = 0
         self.authorizations = 0
         self.block_path: str | None = None
         self.started = asyncio.Event()
@@ -107,6 +109,33 @@ class NativeProviderFixture(ProviderFixture):
             return Response(200, content=b"P" * 1000, headers={"Content-Type": "text/plain"})
         if path.endswith("/pow"):
             return Response(200, text="fixture.challenge")
+        if path.endswith("/users/otp_start"):
+            self.otp_starts += 1
+            assert request.headers["x-csrf-token"] == "Z" * 32
+            assert "__Host-RauthyMfa=" + "M" * 88 in request.headers["cookie"]
+            assert request.headers["cookie"].startswith("__Host-RauthySession=" + "X" * 90)
+            body = json.loads(request.content)
+            assert body == {"otp_id": "otp1", "purpose": {"Login": "O" * 48}}
+            assert "authorization" not in request.headers
+            return Response(
+                200,
+                json={
+                    "code": "P" * 48,
+                    "exp": int((datetime.now(UTC) + timedelta(seconds=120)).timestamp()),
+                },
+                headers={"x-csrf-token": "Y" * 32},
+            )
+        if path.endswith("/users/otp_finish"):
+            self.otp_finishes += 1
+            assert request.headers["x-csrf-token"] == "Y" * 32
+            assert "__Host-RauthyMfa=" + "M" * 88 in request.headers["cookie"]
+            assert json.loads(request.content) == {"code": "P" * 48, "otp_code": "123456"}
+            location = (
+                _ORIGIN
+                + "/api/auth/oidc/callback?"
+                + urlencode({"code": "K" * 64, "state": self.state_for_otp, "iss": _ISSUER})
+            )
+            return Response(202, json={"loc": location}, headers={"location": location})
         if path.endswith("/oidc/authorize"):
             self.authorizations += 1
             body = json.loads(request.content)
@@ -131,8 +160,13 @@ class NativeProviderFixture(ProviderFixture):
             assert body["code_challenge_method"] == "S256"
             assert body["pow"] == _CREDENTIALS["pow"]
             self.nonce, self.challenge = body["nonce"], body["code_challenge"]
+            self.state_for_otp = body["state"]
             if self.mode == "credentials_rejected":
                 return Response(401, json={"message": "upstream private detail"})
+            if self.mode == "request_rejected":
+                return Response(400, json={"message": "upstream private detail"})
+            if self.mode == "provider_access_denied":
+                return Response(403, json={"message": "upstream private detail"})
             if self.mode == "outage":
                 return Response(503, text="upstream private detail")
             if self.mode == "otp_pending":
@@ -140,7 +174,27 @@ class NativeProviderFixture(ProviderFixture):
                     200,
                     json={
                         "code": "O" * 48,
-                        "active_otps": [{"otp_id": "otp1", "otp_kind": "time"}],
+                        "active_otps": [{"otp_id": "otp1", "otp_kind": "email"}],
+                    },
+                    headers={
+                        "Set-Cookie": "__Host-RauthyMfa="
+                        + "M" * 88
+                        + "; Path=/; Secure; HttpOnly; SameSite=Lax",
+                        "X-CSRF-Token": "Z" * 32,
+                    },
+                )
+            if self.mode == "otp_time_only":
+                return Response(
+                    200,
+                    json={
+                        "code": "O" * 48,
+                        "active_otps": [{"otp_id": "unsupported-time", "otp_kind": "time"}],
+                    },
+                    headers={
+                        "Set-Cookie": "__Host-RauthyMfa="
+                        + "M" * 88
+                        + "; Path=/; Secure; HttpOnly; SameSite=Lax",
+                        "X-CSRF-Token": "Z" * 32,
                     },
                 )
             if self.mode == "webauthn_pending":
@@ -329,7 +383,6 @@ class NativeLoginTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_unimplemented_mfa_tos_and_account_updates_do_not_issue_identity(self) -> None:
         for mode in (
-            "otp_pending",
             "webauthn_pending",
             "tos_pending",
             "account_update_required",
@@ -344,6 +397,181 @@ class NativeLoginTests(unittest.IsolatedAsyncioTestCase):
             self.assertIs(response.json()["continuation_available"], False)
             self.assertNotIn("set-cookie", response.headers)
         self.assertEqual(self.fixture.exchanges, 0)
+
+    async def test_otp_mfa_uses_private_rotated_provider_session_and_signed_pkce_once(self) -> None:
+        self.fixture.mode = "otp_pending"
+        await self.prepare()
+        first = await self.submit()
+        self.assertEqual(first.status_code, 202, first.text)
+        self.assertEqual(
+            first.json(),
+            {
+                "stage": "otp_pending",
+                "authenticated": False,
+                "continuation_available": True,
+                "methods": [{"index": 0, "kind": "email"}],
+            },
+        )
+        self.assertEqual(self.fixture.authorizations, 1)
+        self.assertEqual(self.fixture.exchanges, 0)
+        self.assertNotIn("set-cookie", first.headers)
+        self.assertNotIn("otp1", first.text)
+        self.assertNotIn("O" * 48, first.text)
+        self.assertNotIn("M" * 88, first.text)
+        started = await self.public.post(
+            "/api/v1/auth/otp/start", json={"method_index": 0}, headers={"Origin": _ORIGIN}
+        )
+        self.assertEqual(started.status_code, 202, started.text)
+        self.assertEqual(started.json()["stage"], "otp_code_pending")
+        self.assertNotIn("P" * 48, started.text)
+        self.assertEqual(self.fixture.otp_starts, 1)
+        self.assertEqual(
+            (
+                await self.public.post(
+                    "/api/v1/auth/otp/start", json={"method_index": 0}, headers={"Origin": _ORIGIN}
+                )
+            ).status_code,
+            409,
+        )
+        finished = await self.public.post(
+            "/api/v1/auth/otp/finish", json={"otp_code": "123456"}, headers={"Origin": _ORIGIN}
+        )
+        self.assertEqual(finished.status_code, 200, finished.text)
+        self.assertTrue(finished.json()["authenticated"])
+        self.assertFalse(finished.json()["platform_membership_verified"])
+        self.assertEqual(self.fixture.otp_finishes, 1)
+        self.assertEqual(self.fixture.exchanges, 1)
+        sid = self.public.cookies.get(_SID_COOKIE)
+        self.assertIsNotNone(sid)
+        self.assertEqual((await self.public.get("/api/v1/auth/session")).status_code, 200)
+        self.assertEqual(
+            (
+                await self.public.post(
+                    "/api/v1/auth/otp/finish",
+                    json={"otp_code": "123456"},
+                    headers={"Origin": _ORIGIN},
+                )
+            ).status_code,
+            409,
+        )
+        cancel = await self.public.post("/api/v1/auth/cancel", json={}, headers={"Origin": _ORIGIN})
+        self.assertEqual(cancel.status_code, 204)
+        self.assertIsNone(await self.store.get_session(sid))
+
+    async def test_otp_start_and_finish_cancel_wins_against_in_flight_provider(self) -> None:
+        self.fixture.mode = "otp_pending"
+        for blocked_path in ("/users/otp_start", "/users/otp_finish"):
+            self.fixture.block_path = None
+            self.fixture.started.clear()
+            self.fixture.release.clear()
+            await self.prepare()
+            self.assertEqual((await self.submit()).status_code, 202)
+            if blocked_path.endswith("otp_finish"):
+                started = await self.public.post(
+                    "/api/v1/auth/otp/start", json={"method_index": 0}, headers={"Origin": _ORIGIN}
+                )
+                self.assertEqual(started.status_code, 202)
+            self.fixture.block_path = blocked_path
+            path = "/api/v1/auth/otp/" + (
+                "start" if blocked_path.endswith("otp_start") else "finish"
+            )
+            body = (
+                {"method_index": 0}
+                if blocked_path.endswith("otp_start")
+                else {"otp_code": "123456"}
+            )
+            working = asyncio.create_task(
+                self.public.post(path, json=body, headers={"Origin": _ORIGIN})
+            )
+            try:
+                await asyncio.wait_for(self.fixture.started.wait(), 3)
+                cancelled = await self.public.post(
+                    "/api/v1/auth/cancel", json={}, headers={"Origin": _ORIGIN}
+                )
+                self.assertEqual(cancelled.status_code, 204)
+            finally:
+                self.fixture.release.set()
+            late = await asyncio.wait_for(working, 3)
+            self.assertEqual(late.status_code, 401)
+            self.assertNotIn("set-cookie", late.headers)
+            self.assertIsNone(self.public.cookies.get(_SID_COOKIE))
+        self.assertEqual(self.fixture.exchanges, 0)
+
+    async def test_email_otp_accepts_only_pinned_single_space_grouping(self) -> None:
+        self.fixture.mode = "otp_pending"
+        await self.prepare()
+        self.assertEqual((await self.submit()).status_code, 202)
+        self.assertEqual(
+            (
+                await self.public.post(
+                    "/api/v1/auth/otp/start",
+                    json={"method_index": 0},
+                    headers={"Origin": _ORIGIN},
+                )
+            ).status_code,
+            202,
+        )
+        for malformed in ("12 34 56", "123  456", " 123456", "123456 ", "123\t456"):
+            response = await self.public.post(
+                "/api/v1/auth/otp/finish",
+                json={"otp_code": malformed},
+                headers={"Origin": _ORIGIN},
+            )
+            self.assertEqual(response.status_code, 422, malformed)
+        good = await self.public.post(
+            "/api/v1/auth/otp/finish",
+            json={"otp_code": "123 456"},
+            headers={"Origin": _ORIGIN},
+        )
+        self.assertEqual(good.status_code, 200, good.text)
+        self.assertEqual(self.fixture.otp_finishes, 1)
+        self.assertEqual(self.fixture.exchanges, 1)
+
+    async def test_time_only_otp_source_is_not_a_fake_available_totp_login(self) -> None:
+        self.fixture.mode = "otp_time_only"
+        await self.prepare()
+        response = await self.submit()
+        self.assertEqual(response.status_code, 409, response.text)
+        self.assertEqual(
+            response.json(),
+            {
+                "stage": "otp_pending",
+                "authenticated": False,
+                "continuation_available": False,
+                "restart_required": True,
+            },
+        )
+        self.assertNotIn("set-cookie", response.headers)
+        self.assertEqual(self.fixture.otp_starts, 0)
+        self.assertEqual(self.fixture.otp_finishes, 0)
+        self.assertEqual(self.fixture.exchanges, 0)
+        self.assertIsNone(self.public.cookies.get(_SID_COOKIE))
+        denied = await self.public.post(
+            "/api/v1/auth/otp/start",
+            json={"method_index": 0},
+            headers={"Origin": _ORIGIN},
+        )
+        self.assertEqual(denied.status_code, 409)
+
+    async def test_otp_invalid_method_code_and_duplicate_inputs_deny_before_provider(self) -> None:
+        self.fixture.mode = "otp_pending"
+        await self.prepare()
+        self.assertEqual((await self.submit()).status_code, 202)
+        for endpoint, body in (
+            ("otp/start", {"method_index": True}),
+            ("otp/start", {"method_index": 10}),
+            ("otp/finish", {"otp_code": "abc"}),
+            ("otp/finish", {"otp_code": "1" * 200}),
+        ):
+            denied = await self.public.post(
+                "/api/v1/auth/" + endpoint, json=body, headers={"Origin": _ORIGIN}
+            )
+            self.assertEqual(denied.status_code, 422, denied.text)
+        self.assertEqual(self.fixture.otp_starts, 0)
+        self.assertEqual(self.fixture.otp_finishes, 0)
+        self.assertEqual(self.fixture.exchanges, 0)
+        cancel = await self.public.post("/api/v1/auth/cancel", json={}, headers={"Origin": _ORIGIN})
+        self.assertEqual(cancel.status_code, 204)
 
     async def test_cancel_during_provider_and_userinfo_wait(self) -> None:
         for path in ("/oidc/authorize", "/oidc/userinfo"):
@@ -422,6 +650,42 @@ class NativeLoginTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.fixture.authorizations, 0)
         burned = await self.public.post("/api/v1/auth/pow", json={}, headers={"Origin": _ORIGIN})
         self.assertEqual(burned.status_code, 409)
+
+    async def test_native_provider_response_classification_never_mislabels_protocol_as_password(
+        self,
+    ) -> None:
+        # Rauthy v0.37.1 POST /oidc/authorize: 400 validation, 401
+        # password OR session/CSRF, 403 forbidden client/group; the provider
+        # returns error text but Backend must never echo/log it or credentials.
+        for mode, status, code, outcome in (
+            ("credentials_rejected", 401, "NATIVE_PROVIDER_AUTH_REJECTED", "credentials_rejected"),
+            ("request_rejected", 400, "NATIVE_PROVIDER_REQUEST_REJECTED", "request_rejected"),
+            (
+                "provider_access_denied",
+                403,
+                "NATIVE_PROVIDER_ACCESS_DENIED",
+                "provider_access_denied",
+            ),
+        ):
+            with self.subTest(mode=mode):
+                self.fixture.mode = mode
+                await self.prepare()
+                with self.assertLogs("briareus.backend.rauthy_native", level="INFO") as entries:
+                    response = await self.submit()
+                self.assertEqual(response.status_code, status, response.text)
+                self.assertEqual(response.json(), {"error": {"code": code}})
+                self.assertEqual(response.headers["cache-control"], "no-store")
+                self.assertNotIn("set-cookie", response.headers)
+                self.assertNotIn("upstream private detail", response.text)
+                self.assertEqual(len(entries.output), 1)
+                self.assertEqual(
+                    entries.output[0],
+                    "INFO:briareus.backend.rauthy_native:"
+                    f"native_rauthy_first_factor http_status={status} result={outcome}",
+                )
+                for private in (*_CREDENTIALS.values(), "C" * 32, "X" * 90):
+                    self.assertNotIn(private, entries.output[0] + response.text)
+        self.assertEqual(self.fixture.exchanges, 0)
 
     async def test_provider_denials_rate_limits_and_ambiguous_replies_fail_closed(self) -> None:
         for mode, code in (
@@ -520,7 +784,7 @@ class NativeLoginTests(unittest.IsolatedAsyncioTestCase):
                 "first_factor": "password",
                 "pow": "client-solved",
                 "cancel": True,
-                "continuations": [],
+                "continuations": ["otp"],
             },
         )
         self.assertNotIn("set-cookie", response.headers)

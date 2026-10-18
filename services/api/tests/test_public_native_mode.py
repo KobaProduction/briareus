@@ -439,7 +439,11 @@ class PublicNativeModeTests(unittest.IsolatedAsyncioTestCase):
                 },
                 headers={"Origin": _ORIGIN},
             )
-            self.assertEqual(bad.status_code, 401)
+            # An upstream Rauthy HTTP400 invalid client/redirect/target is
+            # a protocol rejection, never evidence of a wrong password.
+            self.assertEqual(bad.status_code, 400)
+            self.assertEqual(bad.json(), {"error": {"code": "NATIVE_PROVIDER_REQUEST_REJECTED"}})
+            self.assertEqual(bad.headers["cache-control"], "no-store")
             self.assertNotIn("set-cookie", bad.headers)
 
     async def test_unconfigured_and_noncanonical_realms_fail_closed_without_extra_env(self) -> None:

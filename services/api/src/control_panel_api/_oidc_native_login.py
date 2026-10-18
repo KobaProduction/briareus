@@ -12,6 +12,7 @@ from urllib.parse import parse_qs, urlsplit
 
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse, Response
+from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_validator
 
 from ._api_paths import AUTH_API_PREFIX, REGISTERED_RAUTHY_CALLBACK_PATH
 from ._native_credentials import NativeFirstFactorRequest
@@ -34,13 +35,39 @@ from ._rauthy_native_protocol import NativeProviderProtocolUnavailable, PrivateN
 _NO_STORE = {"Cache-Control": "no-store", "Pragma": "no-cache"}
 _UNSUPPORTED = frozenset(
     {
-        "otp_pending",
         "webauthn_pending",
         "tos_pending",
         "account_update_required",
         "client_mfa_required",
     }
 )
+
+
+class NativeOtpMethodRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+    method_index: int = Field(ge=0, le=9)
+
+
+class NativeOtpFinishRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+    otp_code: SecretStr
+
+    @field_validator("otp_code")
+    @classmethod
+    def validate_otp_value(cls, value: SecretStr) -> SecretStr:
+        import re
+
+        original = value.get_secret_value()
+        compact = original.replace(" ", "")
+        if re.fullmatch(r"[0-9]{6,8}", compact, re.ASCII) is None:
+            raise ValueError("OTP verification code has unsupported shape")
+        if original != compact and original != (
+            compact[: len(compact) // 2] + " " + compact[len(compact) // 2 :]
+        ):
+            raise ValueError("OTP formatted code is ambiguous")
+        # Rauthy emails codes in two groups separated by ONE ASCII space;
+        # its actual v0.37.1 validate() expects the original digits only.
+        return SecretStr(compact)
 
 
 def _failure(status: int, code: str) -> JSONResponse:
@@ -136,7 +163,7 @@ def native_login_router(
                 "first_factor": "password",
                 "pow": "client-solved",
                 "cancel": True,
-                "continuations": [],
+                "continuations": ["otp"],
             },
             headers=_NO_STORE,
         )
@@ -170,6 +197,56 @@ def native_login_router(
                 status_code=409,
                 headers=_NO_STORE,
             )
+        if step.state == "otp_pending":
+            # Rauthy v0.37.1 one_time_password.rs implements validation for
+            # OtpKind::Email only; Time and Phone return "unimplemented".
+            # Never advertise a TOTP/phone method as a usable login factor.
+            available = tuple(
+                (kind, otp_id)
+                for kind, otp_id in zip(step.challenge_kinds, step.private_otp_ids, strict=True)
+                if kind == "email"
+            )
+            if not available:
+                return JSONResponse(
+                    {
+                        "stage": "otp_pending",
+                        "authenticated": False,
+                        "continuation_available": False,
+                        "restart_required": True,
+                    },
+                    status_code=409,
+                    headers=_NO_STORE,
+                )
+            if (
+                step.secret is None
+                or step.provider_cookie is None
+                or step.csrf_token is None
+                or not step.private_otp_ids
+                or len(step.private_otp_ids) != len(step.challenge_kinds)
+            ):
+                raise NativeProviderProtocolUnavailable("private OTP challenge unavailable")
+            stored = await transactions.stage_native_otp(
+                pending=pending,
+                login_code=step.secret,
+                methods=available,
+                provider_cookie=step.provider_cookie,
+                csrf_token=step.csrf_token,
+            )
+            if not stored or await request.is_disconnected():
+                return _failure(401, "NATIVE_ATTEMPT_EXPIRED_OR_CANCELLED")
+            return JSONResponse(
+                {
+                    "stage": "otp_pending",
+                    "authenticated": False,
+                    "continuation_available": True,
+                    "methods": [
+                        {"index": index, "kind": kind}
+                        for index, (kind, _private_id) in enumerate(available)
+                    ],
+                },
+                status_code=202,
+                headers=_NO_STORE,
+            )
         if step.state == "rate_limited":
             return JSONResponse(
                 {
@@ -179,8 +256,16 @@ def native_login_router(
                 status_code=429,
                 headers=_NO_STORE,
             )
-        if step.state in {"credentials_rejected", "request_rejected"}:
-            return _failure(401, "NATIVE_CREDENTIALS_REJECTED")
+        # Rauthy documents HTTP401 as credentials OR cookie/session/CSRF
+        # failure. A provider HTTP400 is an invalid OIDC request; HTTP403
+        # is an explicitly forbidden client/group. Neither proves an invalid
+        # password. Preserve distinct, non-sensitive provider result codes.
+        if step.state == "credentials_rejected":
+            return _failure(401, "NATIVE_PROVIDER_AUTH_REJECTED")
+        if step.state == "request_rejected":
+            return _failure(400, "NATIVE_PROVIDER_REQUEST_REJECTED")
+        if step.state == "provider_access_denied":
+            return _failure(403, "NATIVE_PROVIDER_ACCESS_DENIED")
         if step.state != "oauth_callback_pending" or step.secret is None:
             raise NativeProviderProtocolUnavailable("native step cannot finish login")
         # The pinned decoder already verified exact callback/code/state/iss.
@@ -263,7 +348,7 @@ def native_login_router(
                         response = _failure(401, "NATIVE_ATTEMPT_EXPIRED_OR_CANCELLED")
                     else:
                         response = await finish(request, pending, step)
-                        success = response.status_code == 200
+                        success = response.status_code in {200, 202}
         except asyncio.CancelledError:
             await retire(state)
             raise
@@ -280,6 +365,134 @@ def native_login_router(
             claimed = True
             response = _failure(503, "NATIVE_LOGIN_UNAVAILABLE")
         if claimed and not success and not await retire(state):
+            return _failure(503, "NATIVE_CANCEL_UNAVAILABLE")
+        return response
+
+    async def otp_body(request: Request, model: type[BaseModel]) -> BaseModel | JSONResponse:
+        raw = await read_body(request, empty=False)
+        if isinstance(raw, JSONResponse):
+            return raw
+        try:
+            return model.model_validate(json.loads(raw, object_pairs_hook=_unique_oidc_fields))
+        except (ValueError, TypeError, UnicodeError, RecursionError):
+            return _failure(422, "NATIVE_OTP_REQUEST_INVALID")
+
+    @router.post(AUTH_API_PREFIX + "/otp/start")
+    async def otp_start(request: Request) -> Response:
+        body = await otp_body(request, NativeOtpMethodRequest)
+        if isinstance(body, JSONResponse):
+            return body
+        assert isinstance(body, NativeOtpMethodRequest)
+        handles = _strict_browser_cookies(request)
+        if handles is None:
+            return _failure(401, "NATIVE_COOKIE_INVALID")
+        state = handles.get(_NATIVE_TX_COOKIE)
+        if state is None:
+            return _failure(401, "NATIVE_INIT_REQUIRED")
+        try:
+            challenge = await transactions.claim_native_otp_start(
+                state=state,
+                issuer=provider.issuer,
+                client_id=provider.client_id,
+                method_index=body.method_index,
+            )
+        except OidcSessionStoreUnavailable:
+            return _failure(503, "NATIVE_OTP_START_UNAVAILABLE")
+        if challenge is None:
+            # Another one-use winner is in progress: never cancel its claim.
+            return _failure(409, "NATIVE_OTP_START_ALREADY_CLAIMED")
+        success = False
+        response: Response
+        try:
+            async with asyncio.timeout(18):
+                if await request.is_disconnected():
+                    response = _failure(401, "NATIVE_ATTEMPT_EXPIRED_OR_CANCELLED")
+                else:
+                    result, private_cookie, private_csrf = await native_provider.otp_start(
+                        pending=challenge
+                    )
+                    confirmed = await transactions.confirm_native_otp_start(
+                        challenge=challenge,
+                        otp_code=result.secret,
+                        otp_expires_at=result.expires_at,
+                        provider_cookie=private_cookie,
+                        csrf_token=private_csrf,
+                    )
+                    if not confirmed or await request.is_disconnected():
+                        response = _failure(401, "NATIVE_ATTEMPT_EXPIRED_OR_CANCELLED")
+                    else:
+                        success = True
+                        response = JSONResponse(
+                            {
+                                "stage": "otp_code_pending",
+                                "authenticated": False,
+                                "expires_at": min(
+                                    result.expires_at,
+                                    int(challenge.original.expires_at.timestamp()),
+                                ),
+                            },
+                            status_code=202,
+                            headers=_NO_STORE,
+                        )
+        except asyncio.CancelledError:
+            await retire(state)
+            raise
+        except (NativeProviderProtocolUnavailable, OidcSessionStoreUnavailable, TimeoutError):
+            response = _failure(503, "NATIVE_OTP_START_UNAVAILABLE")
+        if not success and not await retire(state):
+            return _failure(503, "NATIVE_CANCEL_UNAVAILABLE")
+        return response
+
+    @router.post(AUTH_API_PREFIX + "/otp/finish")
+    async def otp_finish(request: Request) -> Response:
+        body = await otp_body(request, NativeOtpFinishRequest)
+        if isinstance(body, JSONResponse):
+            return body
+        assert isinstance(body, NativeOtpFinishRequest)
+        handles = _strict_browser_cookies(request)
+        if handles is None:
+            return _failure(401, "NATIVE_COOKIE_INVALID")
+        state = handles.get(_NATIVE_TX_COOKIE)
+        if state is None:
+            return _failure(401, "NATIVE_INIT_REQUIRED")
+        try:
+            challenge = await transactions.claim_native_otp_finish(
+                state=state, issuer=provider.issuer, client_id=provider.client_id
+            )
+        except OidcSessionStoreUnavailable:
+            return _failure(503, "NATIVE_OTP_FINISH_UNAVAILABLE")
+        if challenge is None:
+            return _failure(409, "NATIVE_OTP_FINISH_ALREADY_CLAIMED")
+        success = False
+        response: Response
+        try:
+            async with asyncio.timeout(30):
+                if await request.is_disconnected():
+                    response = _failure(401, "NATIVE_ATTEMPT_EXPIRED_OR_CANCELLED")
+                else:
+                    step = await native_provider.otp_finish(
+                        pending=challenge,
+                        otp_value=body.otp_code.get_secret_value(),
+                    )
+                    if not await transactions.native_claim_is_current(challenge.original):
+                        response = _failure(401, "NATIVE_ATTEMPT_EXPIRED_OR_CANCELLED")
+                    else:
+                        response = await finish(request, challenge.original, step)
+                        success = response.status_code == 200
+        except asyncio.CancelledError:
+            await retire(state)
+            raise
+        except OidcIdentityRejected:
+            response = _failure(401, "NATIVE_IDENTITY_REJECTED")
+        except (
+            NativeProviderProtocolUnavailable,
+            OidcSessionStoreUnavailable,
+            OidcProviderUnavailable,
+            OidcIdentityKeysUnavailable,
+            TimeoutError,
+        ):
+            response = _failure(503, "NATIVE_OTP_FINISH_UNAVAILABLE")
+        if not success and not await retire(state):
             return _failure(503, "NATIVE_CANCEL_UNAVAILABLE")
         return response
 

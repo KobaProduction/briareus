@@ -1,8 +1,9 @@
 # Native Rauthy first factor and cancelable completion
 
 Status: local implementation. Password-first-factor transport and signed
-code/PKCE completion are implemented; OTP/WebAuthn/ToS/account-update
-continuations remain explicitly unavailable, not authenticated fallbacks.
+code/PKCE completion are implemented; OTP now has an explicit guarded two-step continuation using source-pinned
+Rauthy, original PKCE and atomic private Valkey claims. WebAuthn/ToS/account-
+update continuations remain unavailable, not authenticated fallbacks.
 No public Files tool, Platform membership or Cedar grant is created by login.
 
 ## Configured capabilities and browser contract
@@ -140,11 +141,11 @@ Malformed input yields 422. Provider throttling yields 429 with the validated
 unconfirmed cancellation yield 503. Do not automatically resubmit a consumed
 attempt or reinterpret a timeout as successful login; start a new attempt.
 
-A verified provider OTP/WebAuthn/ToS/account-update/client-MFA requirement yields 409:
+A verified provider WebAuthn/ToS/account-update/client-MFA requirement yields 409:
 `{stage:<provider-state>,authenticated:false,continuation_available:false,
 restart_required:true}`.
 
-The states are `otp_pending`, `webauthn_pending`, `tos_pending`,
+The unavailable states are `webauthn_pending`, `tos_pending`,
 `account_update_required`, and `client_mfa_required`. No token exchange occurs,
 no challenge secret is forwarded and the local claim is retired. Frontend must
 show the unavailable branch, not silently bypass it, accept terms, re-prompt a
@@ -184,51 +185,138 @@ This classification correction does not implement a WebAuthn ceremony.
 The upstream PoW worker calls `pow_work_wasm` from its sPoW WASM module;
 Frontend owns bundling a pinned supported solver, not the BFF.
 
-## Reviewed Rauthy v0.37.1 OTP continuation contract — decoder only
+## Rauthy first-factor denial classes and safe diagnostics
 
-The pinned upstream source at `references/rauthy-v0.37.1/` provides exact
-second-factor request/response contracts, independently of a signed Briareus
-User and of the BFF's not-yet-activated MFA continuation. In Rauthy
-`src/api/src/users.rs::post_otp_auth_start_login` and
-`src/api_types/src/users.rs`, a previously authenticated password challenge
-with active OTP methods is followed by `POST /auth/v1/users/otp_start` with
-`{otp_id:<provider registered method>,purpose:{Login:<initial challenge code>}}`.
-A successful 200 returns only `{code:<48 ASCII alphanumeric>,exp:<Unix seconds>}`;
-the provider handles SMS/email/TOTP issuance. For verification,
-`POST /auth/v1/users/otp_finish` consumes `{code:<48-char OTP-session code>,
-otp_code:<provider-required OTP>}`. In upstream
-`src/data/src/entity/one_time_password.rs::OtpAdditionalData::into_response`,
-a completed login can return 202 with **both** Location and JSON `{loc}`;
-ToS/required-account-update remain 206/205 **not authenticated**.
+The pinned Rauthy v0.37.1 `POST /auth/v1/oidc/authorize` supports a JSON
+`LoginRequest` with `email`, `password`, `pow`, fixed registered `client_id`,
+`redirect_uri`, `scopes` (array), `state`, `nonce`, PKCE `code_challenge` and
+`code_challenge_method`, and optional reviewed RFC8707 `resource`. The native
+Backend sends those exact fields with its ORIGINAL protected `__Host-RauthySession`
+and `X-CSRF-Token` from `/oidc/session`; no caller-supplied client/redirect/CSRF,
+password grant, arbitrary Origin or upstream-host override. The supported
+response state table comes from Rauthy `src/api/src/oidc.rs::post_authorize`
+and `src/api/src/lib.rs::map_auth_step`:
 
-`_rauthy_native_protocol.interpret_native_otp_start/finish` now classifies
-these exact bounded private provider response shapes; both 202 values must
-agree and still pass the SAME strict callback URL, code, state and issuer
-validation as the original first-factor decoder. OTP method IDs, login
-challenge/session codes and OTP-start results remain `SecretStr` **server-only**
-values. The initial OTP ID list is retained in a masked private DTO instead
-of copied to a browser object. Malformed, duplicate, non-JSON, expired,
-foreign-origin or differing callback claims fail before any code exchange.
-Only an independent fully signed code/PKCE/nonce/resource verification can
-create a Briareus browser session. Source parser tests prove only these
-shapes: no genuine user, provider session or second factor was authenticated.
+- Provider `401` can indicate rejected credentials **or** an invalid provider
+  session/CSRF. It is not proof of a bad password. Backend answers uncached
+  HTTP401 `NATIVE_PROVIDER_AUTH_REJECTED` (neutral, never claims a known
+  password failure).
+- Provider `400` is a malformed/invalid OAuth request, not a password error.
+  Backend answers uncached HTTP400 `NATIVE_PROVIDER_REQUEST_REJECTED`.
+- Provider `403` is an explicit client/allowed-group forbidden result,
+  not a password error. Backend answers uncached HTTP403
+  `NATIVE_PROVIDER_ACCESS_DENIED`.
+- Provider `200` MFA, `202` OAuth callback, `205` account-update, `206` ToS,
+  `406` client-MFA and `429` retry remain separate typed stages; none makes a
+  signed-in User without original OAuth code/PKCE/nonce verification.
+- Invalid/unreviewed protocol results and transport problems return 503,
+  never login success or a guessed password failure.
 
-**Deliberately NOT activated:** `POST /api/v1/auth/first-factor` still ends a
-pending OTP challenge with uncached HTTP409 and retires the original claim;
-capabilities still advertise no supported continuations. Activating the
-provider OTP code directly without a reviewed **atomic Valkey MFA stage** is
-unsafe: it would lose original state/PKCE/CSRF and provider cookies, permit
-racing `cancel`/`otp_finish`, or deliver an authenticated browser cookie after
-its claim was already cancelled. A complete next implementation must capture
-and verify any provider `Set-Cookie` rotation after the first factor, escrow
-private OTP method IDs/codes and original provider/PKCE proof with the
-original expiration, atomically consume OTP start and finish exactly once,
-retain cancellation linkage through exchange, and recheck original expiry
-before and after signed code redemption. It must not silently fall back to a
-hosted provider or return an OTP code to the browser. ToS/WebAuthn/recovery
-need independent validated state machines before their capability flags can
-become true. No public endpoint, token or credential path is enabled by this
-private parser preparation.
+The Backend writes **only** the fixed `native_rauthy_first_factor` event with
+numeric HTTP status and the source-reviewed outcome enum. No email, password,
+PoW solution, provider request or response body, access bearer, Rauthy
+cookie/CSRF, JWT, auth code, PKCE, state, source URL or header enters logs.
+The status alone cannot establish whether an upstream `401` was password
+or CSRF. That distinction requires explicit support in the reviewed Rauthy
+protocol and real authorized provider evidence; it must not be inferred from
+error wording or by asking the owner to disclose credentials.
+
+**Dev acceptance still OPEN:** The user reported successful direct Rauthy
+sign-in but a Panel denial. Request construction matches the pinned upstream
+`LoginRequest` shape, but no genuine first-factor response for that actual
+human attempt was captured under the reviewed status-only logging boundary.
+Frontend must map the new stable `error.code` values without displaying
+"incorrect password" for `400/403`, and must show a neutral unconfirmed
+identity/session error for `401` if its cause is unknown. Only a real signed
+Rauthy/OIDC session + independently verified Platform `/me` accepts the login.
+
+## Bounded OTP continuation with atomic native state and original PKCE
+
+After a verified first password factor returns Rauthy `otp_pending`, Backend
+atomically replaces the original one-time Valkey claim with an `otp_ready`
+record carrying its original issuer/client/state/nonce/PKCE verifier,
+resource-audience, CSRF and validated Rauthy provider cookies. OTP method
+IDs, the upstream login code and any rotated `__Host-RauthyMfa` cookie are
+**private SecretStr** and never appear in the browser. All stages preserve
+the initial attempt's absolute deadline and Valkey TTL; none creates a User,
+Team, Project or Cedar permission. The browser receives only the safe ordered
+method indexes/kinds.
+
+Exactly two new versioned BFF operations are supported in this guarded flow:
+`POST /api/v1/auth/otp/start {"method_index":0}` consumes the selected
+method once via Valkey Lua, performs the *official* Rauthy
+`POST /users/otp_start {otp_id,purpose:{Login:<original private code>}}` on
+a fresh pinned-CA/TLS client and escrow-confirms the returned private
+48-alphanumeric finish code/expiry. It responds `202` with
+`{stage:"otp_code_pending",authenticated:false,expires_at:<min deadline>}`.
+`POST /api/v1/auth/otp/finish {"otp_code":"<6–8 digits>"}` atomically
+consumes that finish claim **once**, calls Rauthy `/users/otp_finish`
+using the same protected session/CSRF and private finish code, validates
+both upstream JSON `loc` AND Location against the original OAuth code/state/
+issuer/callback, and uses the EXISTING independent signed OIDC
+code/PKCE/nonce/Userinfo/resource-token validator before a browser session
+can be created. A successful `200` returns exactly the existing authenticated
+first-factor response with `platform_membership_verified:false` and empty
+permissions; signed Platform /me remains independent.
+
+**Provider-supported factor boundary:** pinned Rauthy v0.37.1
+`src/data/src/entity/one_time_password.rs::{request_otp,validate}` implements
+`OtpKind::Email` only. Its `Time` (TOTP) and `Phone` cases explicitly return
+`unimplemented`; even an advertised upstream `active_otps` time entry does
+NOT mean TOTP login can succeed. Backend therefore selects/escrows ONLY email
+methods. If no email method exists, first-factor responds uncached 409
+`{stage:"otp_pending",authenticated:false,continuation_available:false,
+restart_required:true}` and retires the original claim. The signed browser
+session cannot be created. Email codes of length 6–8 may be entered as pure
+digits or in the provider's *single central ASCII-space* presentation and
+are normalized server-side before the official `/users/otp_finish`; all
+other whitespace/format variations are rejected. OTP capabilities mean
+email-OTP only for this pinned provider version, NOT generic TOTP/WebAuthn.
+If the real administrator's MFA is TOTP-only, a supported provider-version
+migration or a separately reviewed WebAuthn flow is required; do not spoof a
+successful TOTP code or bypass the factor.
+
+The initial `/first-factor` OTP response is now `202` with `stage:otp_pending`,
+`authenticated:false`, `continuation_available:true`, and a bounded safe
+`methods:[{index,kind:"email"}]`. `/capabilities` advertises `continuations:["otp"]`
+when the native provider is injected. A pending OTP does not set a browser
+session cookie, and server-only OTP challenge IDs, provider cookies, CSRF,
+Password, bearer or authorization code are never returned. Unsupported
+WebAuthn/ToS/account-update states stay `409` and authenticated=false.
+
+Stage transitions are `init → claimed → otp_ready → otp_starting →
+otp_started → claimed → complete`; all changes after Init are CAS Lua
+operations on the SAME protected Valkey native-init key with its original
+expiry. Duplicate OTP start/finish is refused, a timed-out or invalid
+provider response retires the attempt, and `cancel`/`logout` can revoke any
+staged transaction or already-linked session even if its HTTP reply is late.
+No other token/identity store, new ENV or second IdP is introduced.
+
+The official pinned Rauthy v0.37.1 response contracts and email-only
+implementation come from
+`src/api/src/users.rs`, `src/api_types/src/users.rs`,
+`src/data/src/entity/one_time_password.rs` and
+`src/data/src/entity/mfa_cookie.rs`. Provider `Set-Cookie` is parsed strictly
+for host-only RauthySession/RauthyMfa/rbid, and any new 32-character session
+CSRF is captured as private state; unknown names, insecure/cross-domain
+cookies, duplicate headers or mismatched callback URLs fail closed.
+
+**Acceptance levels:** the native ASGI/OIDC fixture and independently
+built temporary Valkey 9.1.2 process have passed real Lua-script OTP
+stage/claim/start/finish/cancel and signed-test JWT/PKCE, including provider
+cookie and CSRF rotation, email code formatting, concurrent attempts,
+unsupported TOTP-only method, late cancellation, noeviction OOM and final
+zero test keys. This is not real Rauthy user authentication.
+
+Synthetic native ASGI/OIDC fixtures cover exact OTP
+start/finish, no-cookie before PKCE, provider CSRF/cookie rotation, races,
+cancel and invalid inputs. The disposable Valkey checks confirm the actual CAS Lua scripts and
+noeviction/OOM behavior. Actual upstream authenticated Rauthy User with OTP,
+signed User/Project /me, Frontend OTP form and Dev transport still require
+independent approval. The frontend must not infer signed-in state from any
+`202` response. Never enable a privileged Files/Hand operation from OTP
+alone. The source can be delivered only as a compatible Backend/Frontend
+contract, not as an isolated UI assertion of full MFA acceptance.
 
 ## Atomic Valkey lifecycle and cancellation
 

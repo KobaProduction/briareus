@@ -270,6 +270,7 @@ class PrivateNativeLoginStep:
         "rate_limited",
         "credentials_rejected",
         "request_rejected",
+        "provider_access_denied",
     ]
     # OAuth authorization code, MFA and ToS code are provider-sensitive.
     secret: SecretStr | None = None
@@ -278,6 +279,8 @@ class PrivateNativeLoginStep:
     # may choose a bounded public INDEX but must resolve the original secret
     # OTP ID from server-only escrow before calling /users/otp_start.
     private_otp_ids: tuple[SecretStr, ...] = ()
+    provider_cookie: SecretStr | None = None
+    csrf_token: SecretStr | None = None
     retry_not_before: int | None = None
     expires_at: int | None = None
 
@@ -448,9 +451,82 @@ def interpret_native_authorize(
         return PrivateNativeLoginStep("rate_limited", retry_not_before=retry)
     if status_code == 401:
         return PrivateNativeLoginStep("credentials_rejected")
-    if status_code in (400, 403):
+    if status_code == 400:
         return PrivateNativeLoginStep("request_rejected")
+    if status_code == 403:
+        return PrivateNativeLoginStep("provider_access_denied")
     raise NativeProviderProtocolUnavailable("unknown Rauthy login response; no session allowed")
+
+
+def merge_native_provider_cookies(*, original: SecretStr, updates: tuple[str, ...]) -> SecretStr:
+    """Keep only validated Rauthy host-only cookies in private transaction.
+
+    The pinned upstream AuthStep::AwaitOtpCode returns a RauthyMfa cookie;
+    BrowserId middleware may rotate __Host-rbid. Never expose either to UI
+    or accept unrelated browser/vendor cookies as verified upstream state.
+    """
+    allowed = {"__Host-RauthySession", "__Host-RauthyMfa", "__Host-rbid"}
+    if not isinstance(original, SecretStr) or not isinstance(updates, tuple) or len(updates) > 3:
+        raise NativeProviderProtocolUnavailable("invalid provider session cookie update")
+    result: dict[str, str] = {}
+    for item in original.get_secret_value().split("; "):
+        name, separator, value = item.partition("=")
+        if (
+            not separator
+            or name not in allowed
+            or name in result
+            or not 16 <= len(value) <= 4096
+            or not value.isascii()
+            or any(ord(ch) <= 32 or ord(ch) > 126 for ch in value)
+        ):
+            raise NativeProviderProtocolUnavailable("malformed original provider cookies")
+        result[name] = value
+    if "__Host-RauthySession" not in result:
+        raise NativeProviderProtocolUnavailable("original Rauthy session missing")
+    updated: set[str] = set()
+    for header in updates:
+        if not isinstance(header, str) or not 1 <= len(header) <= 8192:
+            raise NativeProviderProtocolUnavailable("invalid provider Set-Cookie size")
+        try:
+            cookies: SimpleCookie[str] = SimpleCookie()
+            cookies.load(header)
+            if len(cookies) != 1:
+                raise ValueError("ambiguous provider Set-Cookie")
+            name, morsel = next(iter(cookies.items()))
+            if (
+                name not in allowed
+                or name in updated
+                or morsel["path"] != "/"
+                or morsel["domain"]
+                or not morsel["secure"]
+                or not morsel["httponly"]
+                or morsel["samesite"].lower() != "lax"
+                or not 16 <= len(morsel.value) <= 4096
+                or not morsel.value.isascii()
+                or any(ord(ch) <= 32 or ord(ch) > 126 for ch in morsel.value)
+            ):
+                raise ValueError("invalid protected provider cookie attributes")
+            result[name] = morsel.value
+            updated.add(name)
+        except (CookieError, ValueError, TypeError):
+            raise NativeProviderProtocolUnavailable("untrusted Rauthy cookie rotation") from None
+    return SecretStr(
+        "; ".join(
+            f"{name}={result[name]}"
+            for name in ("__Host-RauthySession", "__Host-rbid", "__Host-RauthyMfa")
+            if name in result
+        )
+    )
+
+
+def native_provider_csrf(*, original: SecretStr, headers: Mapping[str, str]) -> SecretStr:
+    """Rauthy can rotate the 32-byte session CSRF between password and MFA."""
+    candidate = _single_header(headers, "x-csrf-token")
+    if candidate is None:
+        return original
+    if re.fullmatch(r"[A-Za-z0-9]{32}", candidate, flags=re.ASCII) is None:
+        raise NativeProviderProtocolUnavailable("invalid rotated provider CSRF")
+    return SecretStr(candidate)
 
 
 def interpret_native_otp_start(

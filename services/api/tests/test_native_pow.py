@@ -12,8 +12,12 @@ from unittest.mock import patch
 from control_panel_api._native_state_scripts import (
     CANCEL_LOGIN,
     CLAIM_INIT,
+    CLAIM_OTP_FINISH,
+    CLAIM_OTP_START,
     COMPLETE_LOGIN,
+    CONFIRM_OTP_START,
     CONFIRM_POW,
+    STAGE_OTP,
 )
 from control_panel_api._oidc import OidcAuthorizationAttempt, RauthyOidcAdapter
 from control_panel_api._oidc_browser import OidcBrowserSessionStore
@@ -62,9 +66,13 @@ class AsyncValkeyStub:
 
     async def eval(self, script: str, numkeys: int, *args: object) -> object:
         """Deterministic scheduling model ONLY; real Lua is tested separately."""
-        assert numkeys == 2
+        assert numkeys in {1, 2}
         await asyncio.sleep(0)
-        first, second, *values = args
+        if numkeys == 2:
+            first, second, *values = args
+        else:
+            first, *values = args
+            second = None
         raw = self.values.get(first)
         item = json.loads(raw) if raw else None
         now = time.time() * 1000
@@ -102,6 +110,78 @@ class AsyncValkeyStub:
                 }
             )
             self.values.pop(second, None)
+            return raw
+        if script == STAGE_OTP:
+            if (
+                not item
+                or item.get("stage") != "claimed"
+                or item.get("claim") != values[0]
+                or item["deadline_ms"] <= now
+            ):
+                return 0
+            update = json.loads(values[1])
+            if (
+                update.get("stage") != "otp_ready"
+                or update.get("claim") != item.get("claim")
+                or update["deadline_ms"] != item["deadline_ms"]
+            ):
+                return 0
+            self.values[first] = values[1]
+            return 1
+        if script == CLAIM_OTP_START:
+            if (
+                not item
+                or item.get("stage") != "otp_ready"
+                or item.get("issuer") != values[0]
+                or item.get("client_id") != values[1]
+                or item["deadline_ms"] <= now
+                or values[2] >= len(item.get("methods", []))
+            ):
+                return None
+            item["selected_otp_id"] = item["methods"][values[2]]["id"]
+            item["otp_claim"] = values[3]
+            item["stage"] = "otp_starting"
+            self.values[first] = json.dumps(item)
+            return raw
+        if script == CONFIRM_OTP_START:
+            if (
+                not item
+                or item.get("stage") != "otp_starting"
+                or item.get("otp_claim") != values[0]
+                or item["deadline_ms"] <= now
+                or values[2] <= now
+            ):
+                return 0
+            item.update(
+                stage="otp_started",
+                otp_code=values[1],
+                otp_expires_ms=values[2],
+                provider_cookie=values[3],
+                csrf=values[4],
+            )
+            for key in ("otp_login_code", "methods", "selected_otp_id"):
+                item.pop(key, None)
+            self.values[first] = json.dumps(item)
+            return 1
+        if script == CLAIM_OTP_FINISH:
+            if (
+                not item
+                or item.get("stage") != "otp_started"
+                or item.get("issuer") != values[0]
+                or item.get("client_id") != values[1]
+                or item["deadline_ms"] <= now
+                or item["otp_expires_ms"] <= now
+            ):
+                return None
+            self.values[first] = json.dumps(
+                {
+                    "stage": "claimed",
+                    "claim": item["claim"],
+                    "deadline_ms": item["deadline_ms"],
+                    "issuer": item["issuer"],
+                    "client_id": item["client_id"],
+                }
+            )
             return raw
         if script == COMPLETE_LOGIN:
             if (
