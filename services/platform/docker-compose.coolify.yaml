@@ -31,7 +31,10 @@ services:
       RAUTHY_USERS_READ_KEY_FILE: /var/lib/briareus-platform/rauthy-users-read.key
 volumes:
   panel-peer:
-    name: briareus-dev-panel-peer-3xshlpoghb9wcyhjgktlqzzp
+    # Coolify prefixes managed volumes with the owning application's UUID.
+    # Reuse the existing allowlisted API peer volume; never mount its private key volume.
+    external: true
+    name: rf5gaooeijfzyiizgaw9kznr_panel-peer
   platform-state: {}
 networks:
   briareus:
