@@ -54,6 +54,13 @@ async def main() -> None:
     assert await exercise([correct]) == ("ACCEPT", 1)
     assert await exercise([correct], chunks=(_BODY[:3], b"", _BODY[3:])) == ("ACCEPT", 3)
     assert await exercise([(b"transfer-encoding", b"chunked")]) == ("ACCEPT", 1)
+    # Gateway must not parse application JSON-RPC. The Hand owns semantics,
+    # duplicate-key rejection and unsupported protocol payloads.
+    for opaque in (b"not-json", b"[]", b'{"method":"unknown","method":"duplicate"}'):
+        assert await exercise([(b"content-length", str(len(opaque)).encode())], body=opaque) == (
+            "ACCEPT",
+            1,
+        )
 
     for headers, error, reads in (
         ([(b"content-length", b"1")], "MCP_CONTENT_LENGTH_INVALID", 1),

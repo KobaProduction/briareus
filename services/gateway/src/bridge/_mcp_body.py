@@ -1,16 +1,13 @@
-"""Strict bounded MCP JSON body before the independent coarse Cedar decision.
+"""Bounded opaque MCP HTTP body transport, not a JSON-RPC interpreter.
 
-This is a protocol transport limit, not authorization. It prevents invalid
-or abusive requests from consuming a trusted private Authorization peer call.
-The Hand independently revalidates before any protected effect.
+Reject framing ambiguity, excess bytes, fragmentation and slow clients.
+The destination Hand owns content-type, JSON-RPC validation and per-effect
+Authorization/Cedar. Gateway never edits or interprets the application body.
 """
 
 from __future__ import annotations
 
 import asyncio
-import json
-import math
-from typing import Any
 
 from starlette.requests import Request
 
@@ -26,28 +23,8 @@ class McpBodyRejected(Exception):
         self.status_code = status_code
 
 
-def _unique_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
-    result: dict[str, Any] = {}
-    for key, value in pairs:
-        if key in result:
-            raise ValueError("duplicate JSON key")
-        result[key] = value
-    return result
-
-
-def _reject_constant(value: str) -> None:
-    raise ValueError("unsupported JSON numeric constant: " + value)
-
-
-def _finite_float(value: str) -> float:
-    result = float(value)
-    if not math.isfinite(result):
-        raise ValueError("non-finite JSON number")
-    return result
-
-
 async def read_mcp_body(request: Request) -> bytes:
-    """Validate bounded UTF-8 JSON object and return original octets intact."""
+    """Read opaque original bytes with bounded transport framing only."""
     lengths = request.headers.getlist("content-length")
     declared_length: int | None = None
     if len(lengths) > 1:
@@ -99,25 +76,8 @@ async def read_mcp_body(request: Request) -> bytes:
     except TimeoutError as exc:
         raise McpBodyRejected("MCP_BODY_READ_TIMEOUT", 408) from exc
 
-    # Even if an outer HTTP stack accepted inconsistent framing, a
-    # different length must never trigger a private Cedar connection call.
+    # HTTP framing must be unambiguous even if an outer server was lenient.
     if declared_length is not None and len(payload) != declared_length:
         raise McpBodyRejected("MCP_CONTENT_LENGTH_INVALID", 400)
 
-    try:
-        data = json.loads(
-            payload.decode("utf-8"),
-            object_pairs_hook=_unique_keys,
-            parse_constant=_reject_constant,
-            parse_float=_finite_float,
-        )
-        if not isinstance(data, dict):
-            raise McpBodyRejected("MCP_BATCH_NOT_SUPPORTED", 400)
-        # Unpaired UTF-16 surrogates can be syntactically valid escaped JSON
-        # but are not Unicode scalar values accepted by FastMCP handlers.
-        json.dumps(data, ensure_ascii=False).encode("utf-8")
-    except McpBodyRejected:
-        raise
-    except (UnicodeError, ValueError, RecursionError) as exc:
-        raise McpBodyRejected("MCP_INVALID_JSON", 400) from exc
     return bytes(payload)

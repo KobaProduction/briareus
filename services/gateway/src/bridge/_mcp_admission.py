@@ -1,16 +1,20 @@
-"""Coarse MCP connection admission against independent Authorization.
+"""MCP Gateway ingress authentication only: no Project/Cedar decision here.
 
-Incoming selectors are not identity proof. Only an independently attested
-Authorization 200 with the exact Permit body may allow Gateway forwarding.
+The private identity verifier validates the real Rauthy resource access token
+and binds its verified issuer/audience/token to a short lived proof. Gateway
+never reads user roles, Project mappings, grants, actions or resource policies.
+Each Hand separately validates the original token and asks Authorization/Cedar
+for the exact protected effect. An unconfigured verifier denies by default.
 """
 
 from __future__ import annotations
 
 import asyncio
-import json
+import hashlib
+import hmac
 from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 from typing import Protocol
-from uuid import UUID
 
 from starlette.requests import Request
 from starlette.responses import JSONResponse
@@ -18,29 +22,47 @@ from starlette.responses import JSONResponse
 from .single_origin import MCP_MODULES
 
 _HAND_TARGETS = {name: f"http://briareus-{name}:8000/mcp" for name in MCP_MODULES}
-_DECISION_TIMEOUT_SECONDS = 5
+_PUBLIC_ORIGIN = "https://briareus.koba-nexus.ru"
+_RAUTHY_ISSUER = _PUBLIC_ORIGIN + "/auth/v1/"
+_VERIFY_TIMEOUT_SECONDS = 5
 
 
 @dataclass(frozen=True, slots=True)
-class PrivateAdmissionReply:
-    """HTTP status and bounded response from authenticated private transport."""
+class VerifiedMcpAuthentication:
+    """Bound result from an independently trusted real resource-token verifier.
 
-    status_code: int
-    body: bytes
-
-
-class TrustedGatewayDecisionPort(Protocol):
-    """Real mTLS/Unix peer, exact decision bytes and nonce proof.
-
-    A plain HTTP URL, caller Bearer, Docker DNS or untrusted header is not a
-    service identity. No default implementation is supplied by Gateway.
+    The trusted port MUST verify Rauthy signing keys, issuer, access-token
+    purpose, audience, expiry and current revocation status. The Gateway
+    accepts only this short-lived token-bound evidence and never exposes it
+    in a header, trace or downstream payload.
     """
 
-    async def decide(self, *, bearer: str, body: bytes) -> PrivateAdmissionReply: ...
+    issuer: str
+    audience: str
+    bearer_sha256: str
+    authenticated_at: datetime
+    expires_at: datetime
+
+
+class McpInvalidToken(Exception):
+    """Trusted verifier reports an invalid or revoked signed access token."""
+
+
+class TrustedGatewayAuthenticationPort(Protocol):
+    """Independent real Rauthy identity verification, not Cedar policy.
+
+    Must be installed by a trusted supervisor with independently verified
+    provider credentials/JWKS/revocation. No ENV flag, unauthenticated HTTP
+    endpoint, Docker DNS, client header or self-declared JWT is authority.
+    """
+
+    async def authenticate(
+        self, *, bearer: str, resource_audience: str
+    ) -> VerifiedMcpAuthentication: ...
 
 
 class McpAdmissionRejected(Exception):
-    """A bounded public transport rejection, never a Cedar decision."""
+    """Bounded public transport refusal, not an operation/Cedar decision."""
 
     def __init__(self, code: str, status_code: int) -> None:
         super().__init__(code)
@@ -50,23 +72,18 @@ class McpAdmissionRejected(Exception):
 
 @dataclass(frozen=True, slots=True)
 class ConnectionAdmission:
+    """Fixed Hand route with an unverified incoming access token."""
+
     hand: str
     bearer: str
-    project_uuid: UUID
-    agent_session_uuid: UUID
-    grant_revision: int
 
     @property
     def target(self) -> str:
         return _HAND_TARGETS[self.hand]
 
-    def command(self) -> dict[str, str | int]:
-        return {
-            "project_uuid": str(self.project_uuid),
-            "agent_session_uuid": str(self.agent_session_uuid),
-            "action": "mcp.connect",
-            "expected_grant_revision": self.grant_revision,
-        }
+    @property
+    def resource_audience(self) -> str:
+        return f"{_PUBLIC_ORIGIN}/hands/{self.hand}/mcp"
 
 
 def admission_error(code: str, status: int) -> JSONResponse:
@@ -77,15 +94,12 @@ def admission_error(code: str, status: int) -> JSONResponse:
     )
 
 
-def _single_header(request: Request, name: str) -> str:
-    values = request.headers.getlist(name)
-    if len(values) != 1 or not values[0] or len(values[0]) > 128 or values[0].strip() != values[0]:
-        raise McpAdmissionRejected("MCP_CONTEXT_INVALID", 400)
-    return values[0]
-
-
 def parse_connection_admission(request: Request) -> ConnectionAdmission:
-    """Parse strictly bounded, *untrusted* selectors for the real PDP."""
+    """Validate only MCP transport, fixed route and Bearer syntax.
+
+    Do not read Project, AgentSession, grant revision or effect rights.
+    Optional original selectors remain UNTRUSTED and are checked at the Hand.
+    """
     hand = request.url.path.removeprefix("/hands/").removesuffix("/mcp")
     canonical = f"/hands/{hand}/mcp"
     if (
@@ -93,9 +107,6 @@ def parse_connection_admission(request: Request) -> ConnectionAdmission:
         or request.url.path != canonical
         or request.scope.get("raw_path") != canonical.encode("ascii")
     ):
-        # A path normalized from percent-encoding, dot segments or duplicate
-        # separators is NOT the exact public MCP resource URI. Reject it
-        # before consulting Authorization or passing a bearer to a Hand.
         raise McpAdmissionRejected("MCP_MODULE_UNKNOWN", 404)
     if request.scope.get("query_string", b"") != b"":
         raise McpAdmissionRejected("MCP_CONTEXT_INVALID", 400)
@@ -115,77 +126,48 @@ def parse_connection_admission(request: Request) -> ConnectionAdmission:
         or any(char.isspace() for char in bearer[7:])
     ):
         raise McpAdmissionRejected("MCP_BEARER_REQUIRED", 401)
-    try:
-        project_text = _single_header(request, "x-briareus-project-uuid")
-        session_text = _single_header(request, "x-briareus-agent-session-uuid")
-        project_uuid = UUID(project_text)
-        agent_session_uuid = UUID(session_text)
-        raw_revision = _single_header(request, "x-briareus-grant-revision")
-        if not raw_revision.isascii() or not raw_revision.isdecimal():
-            raise ValueError("non-decimal grant revision")
-        revision = int(raw_revision)
-    except (ValueError, OverflowError) as exc:
-        raise McpAdmissionRejected("MCP_CONTEXT_INVALID", 400) from exc
-    if (
-        project_uuid.version != 4
-        or str(project_uuid) != project_text
-        or agent_session_uuid.version != 4
-        or str(agent_session_uuid) != session_text
-        or not 1 <= revision <= 2**63 - 1
-        or str(revision) != raw_revision
-    ):
-        raise McpAdmissionRejected("MCP_CONTEXT_INVALID", 400)
-    return ConnectionAdmission(hand, bearer, project_uuid, agent_session_uuid, revision)
+    return ConnectionAdmission(hand, bearer)
 
 
-def _strict_permit_response(payload: bytes) -> bool:
-    """Only exact typed JSON boolean Permit without duplicate keys admits MCP."""
-
-    def no_duplicates(pairs: list[tuple[str, object]]) -> dict[str, object]:
-        result: dict[str, object] = {}
-        for key, value in pairs:
-            if key in result:
-                raise ValueError("duplicate Permit field")
-            result[key] = value
-        return result
-
-    if not payload or len(payload) > 4096:
+def _is_current_proof(proof: object, *, bearer: str, resource_audience: str) -> bool:
+    if type(proof) is not VerifiedMcpAuthentication:
         return False
-    try:
-        permit = json.loads(payload, object_pairs_hook=no_duplicates)
-    except (ValueError, UnicodeDecodeError):
-        return False
-    return isinstance(permit, dict) and set(permit) == {"allowed"} and permit["allowed"] is True
+    now = datetime.now(UTC)
+    digest = hashlib.sha256(bearer.encode("ascii")).hexdigest()
+    return (
+        proof.issuer == _RAUTHY_ISSUER
+        and proof.audience == resource_audience
+        and isinstance(proof.bearer_sha256, str)
+        and hmac.compare_digest(proof.bearer_sha256, digest)
+        and type(proof.authenticated_at) is datetime
+        and type(proof.expires_at) is datetime
+        and proof.authenticated_at.tzinfo is not None
+        and proof.expires_at.tzinfo is not None
+        and now - timedelta(seconds=15) <= proof.authenticated_at <= now + timedelta(seconds=2)
+        and now < proof.expires_at <= now + timedelta(days=1)
+    )
 
 
-async def authorize_connection(
-    private: TrustedGatewayDecisionPort | None, admission: ConnectionAdmission
+async def authenticate_mcp_connection(
+    private: TrustedGatewayAuthenticationPort | None, admission: ConnectionAdmission
 ) -> JSONResponse | None:
-    """Only a real authenticated private peer may carry Bearer to Authorization."""
+    """Deny without valid verified identity; never invoke a Cedar policy."""
     if private is None:
-        return admission_error("MCP_AUTHORIZATION_UNAVAILABLE", 503)
+        return admission_error("MCP_AUTHENTICATION_UNAVAILABLE", 503)
     try:
-        wire = json.dumps(
-            admission.command(), ensure_ascii=True, allow_nan=False, separators=(",", ":")
-        ).encode("utf-8")
-        if not 0 < len(wire) <= 8192:
-            return admission_error("MCP_AUTHORIZATION_UNAVAILABLE", 503)
-        decision = await asyncio.wait_for(
-            private.decide(bearer=admission.bearer, body=wire),
-            timeout=_DECISION_TIMEOUT_SECONDS,
+        proof = await asyncio.wait_for(
+            private.authenticate(
+                bearer=admission.bearer,
+                resource_audience=admission.resource_audience,
+            ),
+            timeout=_VERIFY_TIMEOUT_SECONDS,
         )
-    except Exception:
-        return admission_error("MCP_AUTHORIZATION_UNAVAILABLE", 503)
-    if not isinstance(decision, PrivateAdmissionReply):
-        return admission_error("MCP_AUTHORIZATION_UNAVAILABLE", 503)
-    if decision.status_code == 401:
+    except McpInvalidToken:
         return admission_error("MCP_IDENTITY_UNVERIFIED", 401)
-    if decision.status_code == 403:
-        return admission_error("MCP_ACCESS_DENIED", 403)
-    if (
-        decision.status_code != 200
-        or not isinstance(decision.body, bytes)
-        or not _strict_permit_response(decision.body)
+    except Exception:
+        return admission_error("MCP_AUTHENTICATION_UNAVAILABLE", 503)
+    if not _is_current_proof(
+        proof, bearer=admission.bearer, resource_audience=admission.resource_audience
     ):
-        return admission_error("MCP_AUTHORIZATION_UNAVAILABLE", 503)
+        return admission_error("MCP_IDENTITY_UNVERIFIED", 401)
     return None

@@ -6,7 +6,6 @@ No verified bearer, Project ownership, Cedar or live Hand invocation.
 from __future__ import annotations
 
 import asyncio
-from uuid import UUID
 
 import httpx
 from bridge._mcp_admission import McpAdmissionRejected, parse_connection_admission
@@ -47,8 +46,8 @@ def select(
 async def main() -> None:
     allowed = parse_connection_admission(select())
     assert allowed.hand == "files"
-    assert allowed.project_uuid == UUID("12345678-1234-4234-8234-123456789abc")
-    assert allowed.grant_revision == 7
+    assert allowed.resource_audience == "https://briareus.koba-nexus.ru/hands/files/mcp"
+    assert allowed.bearer.startswith("Bearer ")
 
     for raw in (
         b"/hands/%66iles/mcp",
@@ -89,7 +88,7 @@ async def main() -> None:
             headers={name.decode(): value.decode() for name, value in _HEADERS},
         )
         assert (
-            result.status_code == 503 and result.json()["code"] == "MCP_AUTHORIZATION_UNAVAILABLE"
+            result.status_code == 503 and result.json()["code"] == "MCP_AUTHENTICATION_UNAVAILABLE"
         )
         rejected = await client.post(
             _CANONICAL + "?fake=selector",

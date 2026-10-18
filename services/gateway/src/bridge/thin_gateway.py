@@ -22,9 +22,9 @@ from starlette.routing import Route
 from ._api_contract import public_api_path, retired_auth_path
 from ._mcp_admission import (
     McpAdmissionRejected,
-    TrustedGatewayDecisionPort,
+    TrustedGatewayAuthenticationPort,
     admission_error,
-    authorize_connection,
+    authenticate_mcp_connection,
     parse_connection_admission,
 )
 from ._mcp_body import McpBodyRejected, read_mcp_body
@@ -178,9 +178,38 @@ def _upstream_headers(
     return headers
 
 
+# End-to-end MCP headers are original UNTRUSTED client inputs. Do not
+# normalize Project/AgentSession/revision into an identity assertion; the
+# Hand independently checks each selector against the signed actor and Cedar.
+_MCP_FORWARD_HEADERS = frozenset(
+    {
+        b"authorization",
+        b"accept",
+        b"content-type",
+        b"mcp-protocol-version",
+        b"mcp-session-id",
+        b"last-event-id",
+        b"x-briareus-project-uuid",
+        b"x-briareus-agent-session-uuid",
+        b"x-briareus-grant-revision",
+    }
+)
+
+
+def _mcp_forward_headers(request: Request) -> list[tuple[bytes, bytes]]:
+    incoming = request.scope.get("headers", [])
+    connection_tokens = _connection_tokens(incoming)
+    return [
+        (name, value)
+        for name, value in incoming
+        if name.lower() in _MCP_FORWARD_HEADERS
+        and name.decode("ascii").casefold() not in connection_tokens
+    ]
+
+
 class ThinGateway:
-    def __init__(self, private_decision: TrustedGatewayDecisionPort | None = None) -> None:
-        self._private_decision = private_decision
+    def __init__(self, authentication: TrustedGatewayAuthenticationPort | None = None) -> None:
+        self._authentication = authentication
         self._client: httpx.AsyncClient | None = None
         self._slots = asyncio.Semaphore(64)
         self._draining = False
@@ -281,52 +310,33 @@ class ThinGateway:
             admission = parse_connection_admission(request)
         except McpAdmissionRejected as exc:
             return admission_error(exc.code, exc.status_code)
-        content_types = request.headers.getlist("content-type")
-        if len(content_types) != 1:
-            return admission_error("MCP_CONTENT_TYPE_INVALID", 415)
-        media_type, separator, parameter = content_types[0].partition(";")
-        if media_type.strip().lower() != "application/json" or (
-            separator and parameter.strip().lower() != "charset=utf-8"
-        ):
-            return admission_error("MCP_CONTENT_TYPE_INVALID", 415)
         client = self._client
-        if client is None or self._draining or self._private_decision is None:
-            # No authenticated private peer: reject before reading an
-            # attacker-controlled request body or forwarding any Bearer.
-            return admission_error("MCP_AUTHORIZATION_UNAVAILABLE", 503)
+        if client is None or self._draining or self._authentication is None:
+            # No real independent Rauthy authentication verifier, no route.
+            # This never treats a Bearer string as identity or Permit.
+            return admission_error("MCP_AUTHENTICATION_UNAVAILABLE", 503)
         try:
             await asyncio.wait_for(self._slots.acquire(), timeout=3)
         except TimeoutError:
             return admission_error("MCP_GATEWAY_BUSY", 503)
         try:
-            # Reject malformed, ambiguous, oversized or slow JSON before the
-            # expensive private Authorization peer is contacted. Valid body
-            # bytes are still forwarded unchanged to the Hand's own guard.
+            # Gateway only authenticates the resource-specific Rauthy token.
+            # Project, grant, resource and Cedar decisions belong to the Hand
+            # and the independently authenticated Authorization service.
+            blocked = await authenticate_mcp_connection(self._authentication, admission)
+            if blocked is not None:
+                self._slots.release()
+                return blocked
+            # Bounded HTTP framing only. JSON-RPC semantics, including tools
+            # and notifications, are the selected Hand's responsibility.
             try:
                 payload = await read_mcp_body(request)
             except McpBodyRejected as exc:
                 self._slots.release()
                 return admission_error(exc.code, exc.status_code)
-            blocked = await authorize_connection(self._private_decision, admission)
-            if blocked is not None:
-                self._slots.release()
-                return blocked
-            headers = {
-                "Authorization": admission.bearer,
-                "Accept": "application/json, text/event-stream",
-                "Content-Type": "application/json",
-                # Forward bounded, canonical *selectors*, never unverified actor
-                # identity or caller-supplied peer evidence. Every Hand repeats
-                # signed identity + current Authorization/Cedar admission.
-                "X-Briareus-Project-UUID": str(admission.project_uuid),
-                "X-Briareus-Agent-Session-UUID": str(admission.agent_session_uuid),
-                "X-Briareus-Grant-Revision": str(admission.grant_revision),
-            }
-            protocol = request.headers.getlist("mcp-protocol-version")
-            if len(protocol) == 1 and 0 < len(protocol[0]) <= 64:
-                headers["Mcp-Protocol-Version"] = protocol[0]
+            headers = _mcp_forward_headers(request)
             upstream_request = client.build_request(
-                "POST", admission.target, headers=headers, content=payload
+                request.method, admission.target, headers=headers, content=payload
             )
             upstream = await self._send_upstream(client, upstream_request)
         except asyncio.CancelledError:
@@ -338,14 +348,8 @@ class ThinGateway:
         except BaseException:
             self._slots.release()
             raise
-        # HTTP MCP also uses 202 for accepted notifications, and Hands may
-        # independently deny a protected effect despite coarse admission.
-        if upstream.status_code not in {200, 202, 204, 400, 401, 403, 404, 409, 422, 429, 503}:
-            # Even a rejected upstream response needs the same bounded,
-            # exactly-once cleanup; a close error must not strand admission.
-            rejected_stream = self._stream_response(upstream)
-            await rejected_stream.aclose()
-            return admission_error("MCP_UPSTREAM_UNAVAILABLE", 503)
+        # HTTP status and JSON-RPC error semantics are wholly Hand-owned;
+        # the Gateway does not enumerate expected tool/protocol statuses.
         streamed = self._stream_response(upstream)
         if self._draining:
             await streamed.aclose()
@@ -480,8 +484,8 @@ class ThinGateway:
         return streamed
 
 
-def build_app(*, private_decision: TrustedGatewayDecisionPort | None = None) -> Starlette:
-    transport = ThinGateway(private_decision)
+def build_app(*, authentication: TrustedGatewayAuthenticationPort | None = None) -> Starlette:
+    transport = ThinGateway(authentication)
     handlers = {
         "panel-ui": transport.static,
         "panel-api": transport.api,
