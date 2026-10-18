@@ -241,9 +241,10 @@ class PinnedNativeRauthyInit:
                 # status ONLY. No request payload, email, password, cookie,
                 # CSRF, PoW, bearer, OAuth callback or provider error body.
                 _RESULT_LOG.info(
-                    "native_rauthy_first_factor http_status=%d result=%s",
+                    "native_rauthy_first_factor http_status=%d result=%s denial=%s",
                     response.status_code,
                     step.state,
+                    step.private_denial_class or "none",
                 )
                 if step.state == "otp_pending":
                     return replace(

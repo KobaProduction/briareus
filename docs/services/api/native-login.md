@@ -217,9 +217,33 @@ numeric HTTP status and the source-reviewed outcome enum. No email, password,
 PoW solution, provider request or response body, access bearer, Rauthy
 cookie/CSRF, JWT, auth code, PKCE, state, source URL or header enters logs.
 The status alone cannot establish whether an upstream `401` was password
-or CSRF. That distinction requires explicit support in the reviewed Rauthy
-protocol and real authorized provider evidence; it must not be inferred from
-error wording or by asking the owner to disclose credentials.
+or CSRF. The pinned upstream Rauthy v0.37.1
+`src/error/src/{lib.rs,error_impls.rs}` defines typed HTTP error envelopes.
+Backend now optionally decodes ONLY its strict unique-key JSON `error`
+discriminant on a genuine upstream HTTP401 (never the `message` field):
+`CSRFTokenError` maps to private fixed `denial=csrf`,
+`SessionExpired|SessionTimeout` to `denial=session_expired`,
+`Unauthorized` to `denial=ambiguous_unauthorized`, and a narrow reviewed
+remaining account-auth subset to `denial=other_auth`. Invalid/unavailable/
+duplicate JSON, unexpected provider enum or unknown content type produce
+`denial=unclassified`. These values are **diagnostic-only** fixed local
+enums appended to the existing status-only log. The public 401 remains
+`NATIVE_PROVIDER_AUTH_REJECTED` with no subject/account, password or other
+message. The Rauthy principal middleware itself can turn missing cookie,
+IP-bound expired session or failed CSRF into generic `Unauthorized`, so even
+`denial=ambiguous_unauthorized` does not establish a bad password.
+
+For a real owner login, an authorized Dev-only observer may inspect the
+resulting numeric status and fixed `denial` field from the existing BFF log
+without requesting credentials, reading Rauthy users, or extracting provider
+error text. If it shows `csrf`, inspect exact Init→authorize cookie/CSRF
+continuity; `session_expired` requires expiry/TTLs; generic Unauthorized
+requires additional **bounded** Rauthy-side session validation evidence
+without harvesting password/user/token/session IDs. In particular upstream
+`SESSION_VALIDATE_IP` (if enabled) checks the Init session's source IP again
+on authorize. A different trusted ingress IP could invalidate the session
+before Rauthy ever validates a password; its Dev setting/actual result is
+unverified and belongs to Deployment, not a Backend-assumed disablement.
 
 **Dev acceptance still OPEN:** The user reported successful direct Rauthy
 sign-in but a Panel denial. Request construction matches the pinned upstream
@@ -278,7 +302,13 @@ successful TOTP code or bypass the factor.
 
 The initial `/first-factor` OTP response is now `202` with `stage:otp_pending`,
 `authenticated:false`, `continuation_available:true`, and a bounded safe
-`methods:[{index,kind:"email"}]`. `/capabilities` advertises `continuations:["otp"]`
+`methods:[{index,kind:"email"}]`. `/capabilities` still advertises
+`continuations:[]` for the currently deployed native Frontend v1. The
+backend-only OTP endpoints are ready for a separately reviewed coordinated
+Frontend continuation UI release; do not enable the advertised `"otp"` item
+until that Frontend change is actually deployed. Advertising OTP prematurely
+causes the v1 Frontend prelogin gate to reject ALL logins, including
+password-only users, as `NATIVE_CAPABILITIES_INVALID` before PoW or password.
 when the native provider is injected. A pending OTP does not set a browser
 session cookie, and server-only OTP challenge IDs, provider cookies, CSRF,
 Password, bearer or authorization code are never returned. Unsupported

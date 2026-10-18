@@ -288,6 +288,42 @@ class NativeChallengeDecoderTests(unittest.TestCase):
             with self.assertRaises(NativeProviderProtocolUnavailable):
                 classify(429, headers=header)
 
+    def test_rauthy_401_source_error_enum_never_reads_free_text_or_infers_password(self) -> None:
+        for error, expected in (
+            ("CSRFTokenError", "csrf"),
+            ("SessionExpired", "session_expired"),
+            ("SessionTimeout", "session_expired"),
+            ("Unauthorized", "ambiguous_unauthorized"),
+            ("Disabled", "other_auth"),
+            ("UnexpectedFutureType", "unclassified"),
+            ([], "unclassified"),
+        ):
+            with self.subTest(error=error):
+                answer = classify(
+                    401,
+                    headers={"content-type": "application/json"},
+                    body=json.dumps(
+                        {
+                            "timestamp": 1790000000,
+                            "error": error,
+                            "message": "SECRET_NONCE_OR_EMAIL_MARKER_MUST_NOT_BE_READ",
+                        }
+                    ).encode(),
+                )
+                self.assertEqual(answer.state, "credentials_rejected")
+                self.assertEqual(answer.private_denial_class, expected)
+                self.assertNotIn("SECRET_NONCE", repr(answer))
+                self.assertFalse(hasattr(answer, "authenticated"))
+        for raw in (
+            b'{"error":"CSRFTokenError","error":"Unauthorized"}',
+            b'{"error":NaN}',
+            b'{"error":{"field": "CSRFTokenError"}}',
+            b"plain text user or error",
+        ):
+            with self.subTest(raw=raw):
+                step = classify(401, headers={"content-type": "application/json"}, body=raw)
+                self.assertEqual(step.private_denial_class, "unclassified")
+
     def test_errors_are_not_success_or_signed_identity(self) -> None:
         self.assertEqual(classify(401).state, "credentials_rejected")
         self.assertEqual(classify(400).state, "request_rejected")

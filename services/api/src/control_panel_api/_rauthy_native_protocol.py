@@ -283,6 +283,13 @@ class PrivateNativeLoginStep:
     csrf_token: SecretStr | None = None
     retry_not_before: int | None = None
     expires_at: int | None = None
+    # Rauthy v0.37.1 ErrorResponse.error is a provider-owned discriminant;
+    # the freeform ErrorResponse.message is NEVER read, returned or logged.
+    # This is diagnostic-only and NEVER an independently signed User.
+    private_denial_class: (
+        Literal["csrf", "session_expired", "ambiguous_unauthorized", "other_auth", "unclassified"]
+        | None
+    ) = None
 
 
 def _bounded_json(raw: bytes) -> object:
@@ -450,7 +457,35 @@ def interpret_native_authorize(
             raise NativeProviderProtocolUnavailable("Rauthy retry boundary invalid")
         return PrivateNativeLoginStep("rate_limited", retry_not_before=retry)
     if status_code == 401:
-        return PrivateNativeLoginStep("credentials_rejected")
+        # Upstream Rauthy v0.37.1 error/src/lib.rs defines a stable
+        # ErrorResponse {timestamp,error,message}. Principal middleware
+        # may replace a failed cookie/CSRF lookup with *Unauthorized* before
+        # the password is even inspected. Do NOT inspect/free-text match the
+        # message or infer an incorrect password from Unauthorized.
+        denial: Literal[
+            "csrf", "session_expired", "ambiguous_unauthorized", "other_auth", "unclassified"
+        ] = "unclassified"
+        if _single_header(headers, "content-type") in {
+            "application/json",
+            "application/json; charset=utf-8",
+        }:
+            try:
+                parsed = _bounded_json(body)
+            except NativeProviderProtocolUnavailable:
+                parsed = None
+            if isinstance(parsed, dict):
+                category = parsed.get("error")
+                if not isinstance(category, str):
+                    category = ""
+                if category == "CSRFTokenError":
+                    denial = "csrf"
+                elif category in {"SessionExpired", "SessionTimeout"}:
+                    denial = "session_expired"
+                elif category == "Unauthorized":
+                    denial = "ambiguous_unauthorized"
+                elif category in {"Disabled", "PasswordExpired", "JwtToken"}:
+                    denial = "other_auth"
+        return PrivateNativeLoginStep("credentials_rejected", private_denial_class=denial)
     if status_code == 400:
         return PrivateNativeLoginStep("request_rejected")
     if status_code == 403:

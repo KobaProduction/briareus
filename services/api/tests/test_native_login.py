@@ -163,6 +163,20 @@ class NativeProviderFixture(ProviderFixture):
             self.state_for_otp = body["state"]
             if self.mode == "credentials_rejected":
                 return Response(401, json={"message": "upstream private detail"})
+            if self.mode in {"csrf_rejected", "session_expired", "ambiguous_unauthorized"}:
+                category = {
+                    "csrf_rejected": "CSRFTokenError",
+                    "session_expired": "SessionExpired",
+                    "ambiguous_unauthorized": "Unauthorized",
+                }[self.mode]
+                return Response(
+                    401,
+                    json={
+                        "error": category,
+                        "timestamp": 1790000000,
+                        "message": "sensitive upstream detail must never leak",
+                    },
+                )
             if self.mode == "request_rejected":
                 return Response(400, json={"message": "upstream private detail"})
             if self.mode == "provider_access_denied":
@@ -659,6 +673,14 @@ class NativeLoginTests(unittest.IsolatedAsyncioTestCase):
         # returns error text but Backend must never echo/log it or credentials.
         for mode, status, code, outcome in (
             ("credentials_rejected", 401, "NATIVE_PROVIDER_AUTH_REJECTED", "credentials_rejected"),
+            ("csrf_rejected", 401, "NATIVE_PROVIDER_AUTH_REJECTED", "credentials_rejected"),
+            ("session_expired", 401, "NATIVE_PROVIDER_AUTH_REJECTED", "credentials_rejected"),
+            (
+                "ambiguous_unauthorized",
+                401,
+                "NATIVE_PROVIDER_AUTH_REJECTED",
+                "credentials_rejected",
+            ),
             ("request_rejected", 400, "NATIVE_PROVIDER_REQUEST_REJECTED", "request_rejected"),
             (
                 "provider_access_denied",
@@ -677,13 +699,26 @@ class NativeLoginTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(response.headers["cache-control"], "no-store")
                 self.assertNotIn("set-cookie", response.headers)
                 self.assertNotIn("upstream private detail", response.text)
+                self.assertNotIn("sensitive upstream detail", response.text)
                 self.assertEqual(len(entries.output), 1)
                 self.assertEqual(
                     entries.output[0],
                     "INFO:briareus.backend.rauthy_native:"
-                    f"native_rauthy_first_factor http_status={status} result={outcome}",
+                    f"native_rauthy_first_factor http_status={status} result={outcome}"
+                    " denial="
+                    + {
+                        "csrf_rejected": "csrf",
+                        "session_expired": "session_expired",
+                        "ambiguous_unauthorized": "ambiguous_unauthorized",
+                    }.get(mode, "unclassified" if status == 401 else "none"),
                 )
-                for private in (*_CREDENTIALS.values(), "C" * 32, "X" * 90):
+                for private in (
+                    *_CREDENTIALS.values(),
+                    "C" * 32,
+                    "X" * 90,
+                    "sensitive upstream detail",
+                    "upstream private detail",
+                ):
                     self.assertNotIn(private, entries.output[0] + response.text)
         self.assertEqual(self.fixture.exchanges, 0)
 
@@ -784,7 +819,7 @@ class NativeLoginTests(unittest.IsolatedAsyncioTestCase):
                 "first_factor": "password",
                 "pow": "client-solved",
                 "cancel": True,
-                "continuations": ["otp"],
+                "continuations": [],
             },
         )
         self.assertNotIn("set-cookie", response.headers)

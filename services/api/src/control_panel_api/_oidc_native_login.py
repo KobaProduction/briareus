@@ -163,7 +163,13 @@ def native_login_router(
                 "first_factor": "password",
                 "pow": "client-solved",
                 "cancel": True,
-                "continuations": ["otp"],
+                # Capability describes the CURRENT public browser contract,
+                # not a list of hidden backend-only routes. Deployed UI v1
+                # accepts only []; advertising OTP without a coordinated OTP
+                # form blocks ALL password-only login before /start. Retain
+                # private OTP endpoints fail-closed, but publish the new
+                # continuation only with a Frontend/Backend-compatible release.
+                "continuations": [],
             },
             headers=_NO_STORE,
         )
