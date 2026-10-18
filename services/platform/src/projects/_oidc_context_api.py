@@ -153,19 +153,21 @@ def current_platform_context_router(
                 "user_uuid": str(result.user_id),
                 "enabled": True,
                 "role": result.role,
+                "name": result.name,
+                "email": result.email,
                 "expires_at": min(result.expires_at, verified.expires_at).isoformat(),
                 "teams": [
                     {
                         "team_uuid": str(team.team_id),
-                        "version": team.version,
                         "owner": team.owner,
+                        "name": team.name,
                     }
                     for team in result.teams
                 ],
                 "projects": [
                     {
                         "project_uuid": str(project.project_id),
-                        "version": project.version,
+                        "name": project.name,
                         "owner_kind": project.owner_kind,
                         "owner_uuid": str(project.owner_id),
                         "permissions": list(project.permissions),

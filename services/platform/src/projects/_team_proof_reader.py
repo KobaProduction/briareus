@@ -17,6 +17,7 @@ from common.owner_proof_signing import OwnerVerifiedTeamSnapshot, SourceOwnerSig
 from common.owner_team_contracts import TeamOwnerCommandDTO
 from common.platform_db import PlatformDatabase
 from projects._control_proof_reader import TrustedControlActorSource
+from projects._current_state import membership_state, team_state
 from teams._persistence import TeamMembershipRow, TeamRow
 
 
@@ -63,7 +64,7 @@ class ControlTeamProofReader:
             team = await tx.scalar(
                 select(TeamRow).where(TeamRow.id == command.team_id).with_for_update()
             )
-            if team is None or team.version != command.expected_team_revision:
+            if team is None or team_state(team) != command.expected_team_revision:
                 raise OwnerAuthorityUnavailable("authoritative Team revision changed")
             member = await tx.scalar(
                 select(TeamMembershipRow)
@@ -84,16 +85,16 @@ class ControlTeamProofReader:
                 owner="platform",
                 caller_user_id=actor.user_id,
                 team_id=team.id,
-                owner_revision=team.version,
+                owner_revision=team_state(team),
                 active=True,
                 role=actor.role,
                 capabilities=(command.operation,),
                 epoch_components=(
                     str(team.id),
-                    str(team.version),
+                    str(team_state(team)),
                     str(team.resource_revision),
                     str(team.owner_user_id),
-                    str(member.version) if member is not None else "superuser",
+                    str(membership_state(member)) if member is not None else "superuser",
                     str(actor.user_id),
                     actor.role,
                 ),

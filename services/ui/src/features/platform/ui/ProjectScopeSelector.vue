@@ -11,7 +11,7 @@ const value=ref(props.focusedProjectId??"")
 watch(()=>props.focusedProjectId,id=>{value.value=id??""})
 const valid=computed(()=>isPlatformProjectId(value.value.trim()))
 const labels=computed(()=>locale.value==="ru"?{
-  label:"Открыть Project по ID",open:"Проверить и выбрать проект",back:"Вернуться к списку проектов",
+  label:"Открыть проект по ID",open:"Проверить и выбрать проект",back:"Вернуться к списку проектов",
   focused:"Адресный просмотр одного проекта. Это не полный список проектов и команд.",
   inventory:"Список ограничен сервером. Известный ID можно проверить отдельно; сам ID не даёт доступа.",
   invalid:"Требуется канонический UUIDv4 проекта",checking:"Проверяем проект…",
@@ -24,9 +24,10 @@ const labels=computed(()=>locale.value==="ru"?{
 function submit():void{if(valid.value&&!props.busy)emit("select",value.value.trim())}
 </script>
 <template>
-  <section class="mb-5 min-w-0 rounded-xl border border-border bg-muted/20 p-3">
+  <details class="mb-5 min-w-0 rounded-xl border border-border bg-muted/20 p-3">
+    <summary class="cursor-pointer text-sm font-medium">{{labels.label}}</summary>
     <form class="space-y-3" @submit.prevent="submit">
-      <label class="block text-xs font-medium"><span>{{labels.label}}</span>
+      <label class="block pt-3 text-xs font-medium"><span>{{labels.label}}</span>
         <Input v-model="value" class="mt-2" maxlength="64" autocomplete="off" :disabled="busy"/>
       </label>
       <p class="text-xs leading-5 text-muted-foreground">{{focusedProjectId?labels.focused:labels.inventory}}</p>
@@ -36,5 +37,5 @@ function submit():void{if(valid.value&&!props.busy)emit("select",value.value.tri
         <Button v-if="focusedProjectId" type="button" variant="ghost" size="sm" @click="emit('select',null)">{{labels.back}}</Button>
       </div>
     </form>
-  </section>
+  </details>
 </template>

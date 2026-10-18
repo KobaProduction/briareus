@@ -32,7 +32,8 @@ function validCredentials(email:string,password:string):boolean{
     password.length>=1&&password.length<=256
 }
 function secureBrowser():boolean{
-  return typeof window!=="undefined"&&window.location.protocol==="https:"&&
+  return typeof window!=="undefined"&&(window.location.protocol==="https:"||
+    (window.location.protocol==="http:"&&window.location.origin==="http://127.0.0.1"))&&
     window.isSecureContext===true
 }
 /** Provider's public challenge expires independently of the Init cookie.

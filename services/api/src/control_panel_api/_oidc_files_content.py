@@ -34,7 +34,7 @@ from ._oidc_browser import (
     _strict_browser_cookies,
 )
 from ._oidc_membership import CurrentPlatformContext
-from ._oidc_origin_policy import PUBLIC_ORIGIN, local_browser_host
+from ._oidc_origin_policy import PUBLIC_HOST, PUBLIC_ORIGIN, local_browser_host
 
 _NO_STORE = {"Cache-Control": "no-store", "Pragma": "no-cache"}
 _MAX_BODY = 8192
@@ -204,7 +204,7 @@ def files_content_router(
 ) -> APIRouter:
     router = APIRouter()
     origin = test_only_local_origin or PUBLIC_ORIGIN
-    host = local_browser_host(test_only_local_origin) or "briareus.koba-nexus.ru"
+    host = local_browser_host(test_only_local_origin) or PUBLIC_HOST
 
     @router.post(API_V1_PREFIX + "/files/read", include_in_schema=False)
     async def read(request: Request) -> JSONResponse:

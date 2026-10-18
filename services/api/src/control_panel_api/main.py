@@ -223,6 +223,7 @@ def create_control_panel_api(
                 test_only_local_origin=test_only_local_origin,
                 expected_issuer=managed_provider.issuer,
                 expected_client_id=managed_provider.client_id,
+                management_peer=platform_peer,
             )
         )
     else:

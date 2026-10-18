@@ -17,7 +17,6 @@ class TeamRow(ControlBase):
     id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
     name: Mapped[str] = mapped_column(String(255))
     owner_user_id: Mapped[UUID] = mapped_column(index=True)
-    version: Mapped[int] = mapped_column(Integer, default=1)
     resource_revision: Mapped[int] = mapped_column(Integer, default=0)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(UTC)
@@ -37,4 +36,3 @@ class TeamMembershipRow(ControlBase):
     )
     user_id: Mapped[UUID] = mapped_column()
     active: Mapped[bool] = mapped_column(Boolean, default=True)
-    version: Mapped[int] = mapped_column(Integer, default=1)

@@ -1,0 +1,205 @@
+name: briareus-local
+services:
+  briareus-control-panel-api:
+    extends:
+      file: services/api/docker-compose.yaml
+      service: briareus-control-panel-api
+    build:
+      context: .
+      dockerfile: services/api/Dockerfile
+    environment:
+      OTEL_SERVICE_NAME: briareus-control-panel-api
+      SSL_CERT_FILE: /local-ca/ca.crt
+      PLATFORM_PANEL_SOCKET: /run/briareus-platform/panel.sock
+      PLATFORM_PANEL_SIGNING_KEY_FILE: /run/secrets/panel-signing.key
+      BRIAREUS_LOCAL_TESTING: "1"
+      OIDC_ISSUER: https://127.0.0.1/auth/v1
+      OIDC_RESOURCE_AUDIENCE: https://127.0.0.1/hands/files/mcp
+    volumes:
+    - ./services/api/src/control_panel_api:/app/src/control_panel_api:ro
+    - ./.local/briareus/secrets/ca.crt:/local-ca/ca.crt:ro
+    - ./.local/briareus/secrets/certifi-bundle.crt:/app/.venv/lib/python3.13/site-packages/certifi/cacert.pem:ro
+    - ./.local/briareus/secrets/panel-signing.key:/run/secrets/panel-signing.key:ro
+    - platform-panel:/run/briareus-platform:ro
+    user: 1001:1000
+    command: ["/app/.venv/bin/python", "-m", "uvicorn", "control_panel_api.main:app", "--host", "0.0.0.0", "--port", "8000", "--no-proxy-headers", "--reload", "--reload-dir", "/app/src/control_panel_api"]
+    ports:
+    - 127.0.0.1:18000:8000
+  briareus-control-panel-ui:
+    extends:
+      file: services/ui/docker-compose.yaml
+      service: briareus-control-panel-ui
+    build:
+      context: .
+      dockerfile: services/ui/Dockerfile
+    environment:
+      OTEL_SERVICE_NAME: briareus-control-panel-ui
+  briareus-gateway:
+    extends:
+      file: services/gateway/docker-compose.yaml
+      service: briareus-gateway
+    build:
+      context: .
+      dockerfile: services/gateway/Dockerfile
+    environment:
+      OTEL_SERVICE_NAME: briareus-gateway
+  briareus-authorization:
+    extends:
+      file: services/authorization/docker-compose.yaml
+      service: briareus-authorization
+    build:
+      context: .
+      dockerfile: services/authorization/Dockerfile
+    environment:
+      OTEL_SERVICE_NAME: briareus-authorization
+  briareus-platform:
+    extends:
+      file: services/platform/docker-compose.yaml
+      service: briareus-platform
+    build:
+      context: .
+      dockerfile: services/platform/Dockerfile
+    environment:
+      OTEL_SERVICE_NAME: briareus-platform
+      PLATFORM_PANEL_SOCKET: /run/briareus-platform/panel.sock
+      PLATFORM_PANEL_VERIFY_KEY_FILE: /run/secrets/panel-signing.pub
+      RAUTHY_USERS_READ_KEY_FILE: /run/secrets/rauthy-users-read.key
+      BRIAREUS_LOCAL_TESTING: "1"
+    volumes:
+    - ./.local/briareus/secrets/panel-signing.pub:/run/secrets/panel-signing.pub:ro
+    - ./.local/briareus/secrets/rauthy-users-read.key:/run/secrets/rauthy-users-read.key:ro
+    - platform-panel:/run/briareus-platform
+    - ./services/platform/src/projects:/app/src/projects:ro
+    - ./services/platform/src/teams:/app/src/teams:ro
+    - ./services/common/owner_migrations.py:/app/src/common/owner_migrations.py:ro
+    - ./services/platform/migrations:/app/src/common/alembic_owners/platform:ro
+    develop:
+      watch:
+      - action: restart
+        path: ./services/platform/src
+      - action: restart
+        path: ./services/platform/migrations
+      - action: restart
+        path: ./services/common/owner_migrations.py
+  briareus-resources:
+    extends:
+      file: services/resources/docker-compose.yaml
+      service: briareus-resources
+    build:
+      context: .
+      dockerfile: services/resources/Dockerfile
+    environment:
+      OTEL_SERVICE_NAME: briareus-resources
+    volumes:
+    - ./services/resources/src/projects:/app/src/projects:ro
+    - ./services/common/owner_migrations.py:/app/src/common/owner_migrations.py:ro
+    - ./services/resources/migrations:/app/src/common/alembic_owners/resources:ro
+    develop:
+      watch:
+      - action: restart
+        path: ./services/resources/src
+      - action: restart
+        path: ./services/resources/migrations
+      - action: restart
+        path: ./services/common/owner_migrations.py
+  briareus-files:
+    extends:
+      file: hands/files/docker-compose.yaml
+      service: briareus-files
+    build:
+      context: .
+      dockerfile: hands/files/Dockerfile
+    environment:
+      OTEL_SERVICE_NAME: briareus-files
+  briareus-terminal:
+    extends:
+      file: hands/terminal/docker-compose.yaml
+      service: briareus-terminal
+    build:
+      context: .
+      dockerfile: hands/terminal/Dockerfile
+    environment:
+      OTEL_SERVICE_NAME: briareus-terminal
+  briareus-web:
+    extends:
+      file: hands/web/docker-compose.yaml
+      service: briareus-web
+    build:
+      context: .
+      dockerfile: hands/web/Dockerfile
+    environment:
+      OTEL_SERVICE_NAME: briareus-web
+  briareus-svc:
+    extends:
+      file: hands/svc/docker-compose.yaml
+      service: briareus-svc
+    build:
+      context: .
+      dockerfile: hands/svc/Dockerfile
+    environment:
+      OTEL_SERVICE_NAME: briareus-svc
+  briareus-infrastructure:
+    extends:
+      file: hands/infrastructure/docker-compose.yaml
+      service: briareus-infrastructure
+    build:
+      context: .
+      dockerfile: hands/infrastructure/Dockerfile
+    environment:
+      OTEL_SERVICE_NAME: briareus-infrastructure
+  briareus-reverse:
+    extends:
+      file: hands/reverse/docker-compose.yaml
+      service: briareus-reverse
+    build:
+      context: .
+      dockerfile: hands/reverse/Dockerfile
+    environment:
+      OTEL_SERVICE_NAME: briareus-reverse
+  briareus-postgres:
+    extends:
+      file: services/external/docker-compose.yaml
+      service: briareus-postgres
+    build:
+      context: .
+      dockerfile: services/external/Dockerfile
+  briareus-valkey:
+    extends:
+      file: services/external/docker-compose.yaml
+      service: briareus-valkey
+  briareus-rauthy:
+    extends:
+      file: services/external/docker-compose.yaml
+      service: briareus-rauthy
+    environment:
+      PUB_URL: 127.0.0.1
+      # This loopback-only development adapter permits local user provisioning
+      # with the existing administrator password, without enrolling MFA.
+      ADMIN_FORCE_MFA: "false"
+      # Upstream WebAuthn requires a DNS RP ID even when only password login
+      # is used. This unused passkey realm has no published browser route.
+      RP_ID: localhost
+      RP_ORIGIN: https://localhost:443
+  local-tls:
+    image: caddy:2-alpine
+    ports:
+    - 127.0.0.1:18080:80
+    - 127.0.0.1:443:443
+    - 127.0.0.1:18444:8444
+    volumes:
+    - ./local/Caddyfile:/etc/caddy/Caddyfile:ro
+    - ./.local/briareus/secrets/server.crt:/certs/server.crt:ro
+    - ./.local/briareus/secrets/server.key:/certs/server.key:ro
+    networks:
+      - briareus
+volumes:
+  postgres-data: {}
+  valkey-data: {}
+  rauthy-data: {}
+  platform-panel: {}
+networks:
+  briareus:
+    name: briareus-local-net
+    ipam:
+      config:
+      - subnet: 172.30.89.0/24

@@ -38,6 +38,7 @@ from ._oidc_id_token import (
     VerifiedOidcIdentity,
 )
 from ._oidc_origin_policy import (
+    browser_callback_uri,
     local_browser_host,
     resolve_browser_origin,
     validate_files_resource_intent,
@@ -881,7 +882,7 @@ def oidc_browser_router(
         provider_issuer=provider.issuer,
         provider_client=provider.client_id,
     )
-    callback_uri = public_origin + REGISTERED_RAUTHY_CALLBACK_PATH
+    callback_uri = browser_callback_uri(public_origin)
     panel_uri = public_origin + "/panel/"
     expected_host = local_browser_host(test_only_local_origin)
 

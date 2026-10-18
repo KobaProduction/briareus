@@ -1,0 +1,23 @@
+{
+    admin off
+    auto_https off
+    default_sni 127.0.0.1
+}
+http://127.0.0.1 {
+    reverse_proxy /api/* briareus-control-panel-api:8000
+    reverse_proxy /panel/* briareus-control-panel-ui:8080
+    redir / /panel/ 302
+}
+https://127.0.0.1 {
+    tls /certs/server.crt /certs/server.key
+    reverse_proxy /auth/v1/* briareus-rauthy:8080
+    reverse_proxy /api/* briareus-control-panel-api:8000
+    reverse_proxy /panel/* briareus-control-panel-ui:8080
+    reverse_proxy briareus-gateway:8000
+}
+https://:8444 {
+    tls /certs/server.crt /certs/server.key
+    reverse_proxy briareus-rauthy:8080 {
+        header_up Host 127.0.0.1
+    }
+}

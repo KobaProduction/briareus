@@ -65,14 +65,14 @@ class TrustedPlatformPeerPort(Protocol):
 class _Team(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
     team_uuid: UUID
-    version: int = Field(ge=1)
     owner: bool
+    name: str | None = Field(default=None, max_length=255)
 
 
 class _Project(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
     project_uuid: UUID
-    version: int = Field(ge=1)
+    name: str | None = Field(default=None, max_length=255)
     owner_kind: Literal["user", "team"]
     owner_uuid: UUID
     permissions: tuple[Literal["use_resources", "approve_agent_session"], ...]
@@ -82,6 +82,8 @@ class _PlatformCurrent(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
     issuer: str
     subject: str
+    name: str | None = Field(default=None, max_length=255)
+    email: str | None = Field(default=None, max_length=255)
     user_uuid: UUID
     enabled: bool
     role: Literal["user", "operator"]
@@ -214,18 +216,20 @@ class PrivatePlatformCurrentClient:
             user_uuid=current.user_uuid,
             enabled=True,
             role=current.role,
+            name=current.name,
+            email=current.email,
             expires_at=current.expires_at,
             teams=tuple(
-                PlatformTeamContext(item.team_uuid, item.version, item.owner)
+                PlatformTeamContext(item.team_uuid, item.owner, item.name)
                 for item in current.teams
             ),
             projects=tuple(
                 PlatformProjectContext(
                     item.project_uuid,
-                    item.version,
                     item.owner_kind,
                     item.owner_uuid,
                     item.permissions,
+                    item.name,
                 )
                 for item in current.projects
             ),

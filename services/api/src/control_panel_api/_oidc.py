@@ -21,6 +21,7 @@ from urllib.parse import urlencode, urlsplit
 import httpx
 from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, SecretStr, ValidationError
 
+from ._local_provider_transport import provider_http_client
 from ._oidc_id_token import (
     OidcIdentityRejected,
     VerifiedOidcIdentity,
@@ -155,7 +156,7 @@ class RauthyOidcAdapter:
         self._resource_audience = resource_audience
         if not _is_https_url(self._issuer) or not client_id or not client_id.strip():
             raise ValueError("OIDC requires a real HTTPS issuer and client ID")
-        self._client = http_client or httpx.AsyncClient(
+        self._client = http_client or provider_http_client(
             timeout=5.0, follow_redirects=False, trust_env=False
         )
         self._owns_client = http_client is None

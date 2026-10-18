@@ -24,6 +24,7 @@ from common.owner_contracts import (
 from common.owner_transactions import OwnerCommandOutcome, OwnerLocalCommandExecutor
 from common.platform_db import PlatformDatabase
 from common.platform_errors import AccessDenied, Conflict, InvalidInput
+from projects._current_state import project_state
 from projects._persistence import ProjectRow
 from teams._persistence import TeamMembershipRow, TeamRow
 
@@ -72,7 +73,7 @@ class ControlSourceService:
         )
         if (
             row is None
-            or row.version != request.expected_control_revision
+            or project_state(row) != request.expected_control_revision
             or row.lifecycle_status != "active"
         ):
             raise Conflict("active Project ownership revision unavailable or changed")
@@ -130,12 +131,11 @@ class ControlSourceService:
                 raise AccessDenied("recipient Team current membership unavailable")
             project.owner_user_id = None
             project.owner_team_id = team_id
-            project.version += 1
             project.resource_revision += 1
             return {
                 "project_id": str(project.id),
                 "owner_team_id": str(team_id),
-                "version": project.version,
+                "state": format(project_state(project), "064x"),
                 "resource_revision": project.resource_revision,
             }
 
@@ -166,12 +166,11 @@ class ControlSourceService:
                 raise AccessDenied("only current Team owner can withdraw Project")
             project.owner_user_id = team.owner_user_id
             project.owner_team_id = None
-            project.version += 1
             project.resource_revision += 1
             return {
                 "project_id": str(project.id),
                 "owner_user_id": str(team.owner_user_id),
-                "version": project.version,
+                "state": format(project_state(project), "064x"),
                 "resource_revision": project.resource_revision,
             }
 
@@ -276,7 +275,6 @@ class ControlSourceService:
             row = await self._project(tx, decision)
             await self._require_project_owner(tx, decision, row)
             row.lifecycle_status = "deleting"
-            row.version += 1
             row.resource_revision += 1
             # THIS IS A FENCE, NOT A FILE/RESOURCE/NATIVE DELETE.
             # Later current Control-issued authorizations deny non-active
@@ -284,7 +282,7 @@ class ControlSourceService:
             return {
                 "project_id": str(row.id),
                 "lifecycle_status": row.lifecycle_status,
-                "fenced_control_revision": row.version,
+                "fenced_control_revision": project_state(row),
                 "resource_revision": row.resource_revision,
                 "reconciliation_required": True,
             }
@@ -358,7 +356,7 @@ class ControlSourceService:
             if (
                 row is None
                 or row.lifecycle_status != "deleting"
-                or row.version != fenced_control_revision
+                or project_state(row) != fenced_control_revision
                 or row.resource_revision != decision.request.expected_control_resource_revision
             ):
                 raise AccessDenied("Project is not fenced for owner deletion")
@@ -369,12 +367,11 @@ class ControlSourceService:
             ):
                 raise AccessDenied("owner deletion proof expired while acquiring Control lock")
             row.lifecycle_status = "deleted"
-            row.version += 1
             row.resource_revision += 1
             return {
                 "project_id": str(row.id),
                 "lifecycle_status": row.lifecycle_status,
-                "version": row.version,
+                "state": format(project_state(row), "064x"),
                 "resource_revision": row.resource_revision,
                 "native_artifacts_removed": False,
                 "physical_cleanup_verified": False,

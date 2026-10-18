@@ -14,7 +14,7 @@ from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 from starlette.requests import ClientDisconnect
 
-from ._api_paths import AUTH_API_PREFIX, REGISTERED_RAUTHY_CALLBACK_PATH
+from ._api_paths import AUTH_API_PREFIX
 from ._oidc import OidcProviderUnavailable, RauthyOidcAdapter
 from ._oidc_browser import (
     _NATIVE_TX_COOKIE,
@@ -23,7 +23,12 @@ from ._oidc_browser import (
     _cookie,
     _strict_browser_cookies,
 )
-from ._oidc_origin_policy import local_browser_host, resolve_browser_origin
+from ._oidc_origin_policy import (
+    PUBLIC_HOST,
+    browser_callback_uri,
+    local_browser_host,
+    resolve_browser_origin,
+)
 from ._rauthy_native_init import PinnedNativeRauthyInit
 from ._rauthy_native_protocol import NativeProviderProtocolUnavailable
 
@@ -74,11 +79,11 @@ def native_login_start_router(
     if (
         native_init.issuer != provider.issuer
         or native_init.client_id != provider.client_id
-        or native_init.callback != origin + REGISTERED_RAUTHY_CALLBACK_PATH
+        or native_init.callback != browser_callback_uri(origin)
     ):
         raise ValueError("native Rauthy issuer/client/callback differs from signed OAuth provider")
-    host = local_browser_host(test_only_local_origin) or "briareus.koba-nexus.ru"
-    callback = origin + REGISTERED_RAUTHY_CALLBACK_PATH
+    host = local_browser_host(test_only_local_origin) or PUBLIC_HOST
+    callback = browser_callback_uri(origin)
     router = APIRouter()
 
     @router.post(AUTH_API_PREFIX + "/start")

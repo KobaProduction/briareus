@@ -61,6 +61,8 @@ class VerifiedRauthyUserStatus:
     subject: str
     active: bool
     expires_at: datetime
+    name: str | None = None
+    email: str | None = None
 
 
 class TrustedRauthyUserStatusPort(Protocol):
@@ -132,6 +134,8 @@ class PlatformCurrentSubjectLinkReader:
                 role=link.briareus_role,
                 revision=link.version,
                 expires_at=verified.expires_at,
+                name=verified.name,
+                email=verified.email,
             )
 
         if verified.expires_at <= datetime.now(UTC):

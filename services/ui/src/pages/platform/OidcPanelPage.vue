@@ -39,6 +39,7 @@ function protectedPage(loader:()=>Promise<{default:Component}>){
   })
 }
 const OidcProjectWorkspace=protectedPage(()=>import("@/widgets/platform-context/ui/OidcProjectWorkspace.vue"))
+const PlatformAdministration=protectedPage(()=>import("@/widgets/platform-context/ui/PlatformAdministration.vue"))
 const CatalogWorkspace=protectedPage(()=>import("@/widgets/catalog/ui/CatalogWorkspace.vue"))
 const ModuleWorkspacePage=protectedPage(()=>import("@/pages/modules/ModuleWorkspacePage.vue"))
 const DashboardOverview=protectedPage(()=>import("@/widgets/dashboard/ui/DashboardOverview.vue"))
@@ -376,10 +377,10 @@ onBeforeUnmount(()=>{
           </Button>
           <span v-if="refreshing" class="text-[11px]">{{labels.fetching}}</span>
         </div>
-        <span class="text-xs text-muted-foreground">{{labels.safe}}</span>
       </div>
 
       <template v-if="activePage==='home'">
+        <PlatformAdministration v-if="activeContext.user.role==='operator'" :context="activeContext" view="overview" @changed="refresh"/>
         <OidcProjectWorkspace :session-open-recovery="sessionOpenRecovery" :context="activeContext" :identity="identity" :selected-project-id="selectedProjectId" view="overview" @select-project="selectProject"/>
         <Card class="min-w-0">
           <CardHeader>
@@ -395,9 +396,8 @@ onBeforeUnmount(()=>{
           </CardContent>
         </Card>
       </template>
-      <OidcProjectWorkspace :session-open-recovery="sessionOpenRecovery" v-else-if="activePage==='users'" :context="activeContext" :identity="identity" :selected-project-id="selectedProjectId" view="overview" @select-project="selectProject"/>
-      <OidcProjectWorkspace :session-open-recovery="sessionOpenRecovery" v-else-if="activePage==='teams'" :context="activeContext" :identity="identity" :selected-project-id="selectedProjectId" view="teams" @select-project="selectProject"/>
-      <OidcProjectWorkspace :session-open-recovery="sessionOpenRecovery" v-else-if="activePage==='projects'" :context="activeContext" :identity="identity" :selected-project-id="selectedProjectId" view="projects" @select-project="selectProject"/>
+      <PlatformAdministration v-else-if="activeContext.user.role==='operator'&&(activePage==='users'||activePage==='teams'||activePage==='projects')" :key="activePage" :context="activeContext" :view="activePage" @changed="refresh"/>
+      <OidcProjectWorkspace :session-open-recovery="sessionOpenRecovery" v-else-if="activePage==='users'||activePage==='teams'||activePage==='projects'" :context="activeContext" :identity="identity" :selected-project-id="selectedProjectId" :view="activePage==='users'?'overview':activePage" @select-project="selectProject"/>
       <OidcProjectWorkspace :session-open-recovery="sessionOpenRecovery" v-else-if="activePage==='sessions'" :context="activeContext" :identity="identity" :selected-project-id="selectedProjectId" view="sessions" @select-project="selectProject"/>
       <CatalogWorkspace v-else-if="activePage==='integrations'" :context="activeContext" :selected-project-id="selectedProjectId" kind="integration" @select-project="selectProject"/>
       <CatalogWorkspace v-else-if="activePage==='variables'" :context="activeContext" :selected-project-id="selectedProjectId" kind="variable" @select-project="selectProject"/>

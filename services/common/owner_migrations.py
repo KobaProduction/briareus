@@ -72,8 +72,8 @@ _GREENFIELD_OWNER_EPOCH: frozenset[OwnerName] = frozenset({"access", "platform",
 _APPROVED_BASELINE_HASHES: dict[OwnerName, str] = {
     "identity": "ee13ba6b4266a325be4f5860e3a321c43662e2409bfcd88f69ccf9969f8466eb",
     "access": "b9db1f587cb5412d7d08616acac58468d910c9a535bc9b7de77a5570a1652b2c",
-    "platform": "9207a0eba1c49298b866120c22396ac8f59a0a1066d347b66c3c9a46ef7c99f9",
-    "resources": "640be5cf251efb8947d2495520d410cbdc8f78adc4ab8052356d0dfbd1456aea",
+    "platform": "d73c73e7a0a1ccf5fd175b10fe10d5f13751dd325a7d04671f8629988b8d644e",
+    "resources": "8d90e38d55364e7c9d5622ff2063ff82687e73ab72015313933a912293a9d1c3",
     "files": "395244365a0bd125869329b31554e285d8313f3f8253bd6596006c73421a1679",
     "runtime": "acc05a7994ad166610ad02b4c189f7c776df53a4a922bd75fa12ed64d7b46b75",
     "reverse": "7876512ca2e5b8a47ba7f1dccd13ede9a58378fea4133de400e8e9ff884fe517",
@@ -88,14 +88,14 @@ _APPROVED_INTERMEDIATE_SIGNATURES: dict[str, str] = {
 # with the same nominal head/version from becoming a silent privilege change.
 _NEW_EPOCH_SOURCE_HASHES: dict[str, str] = {
     "access_20261015_0001": "0a576fe65298b14581e683475166f68c36e6f51be87936b55540d4136e61d7fd",
-    "platform_20261015_0001": "dc41b1d3586713f11b4137c31dd9d08c68efbb40a23a2b6a83f8bc9ab66444b6",
-    "resources_20261015_0001": "cafec8634d35c4eacb1c00c17551b2875f92939654671a4dd18988fd29adf119",
+    "platform_20261018_0001": "3c1dd8a7ba55f6086e80cc12040d4570ec91f3116e81dccb58d2be38a048c8e3",
+    "resources_20261018_0001": "911a0418f8f3f56c1982ff92ac330077aa683385a85f032c7cbc4a7c89a606d1",
 }
 _REVIEWED_VERSIONS: dict[OwnerName, tuple[str, ...]] = {
     "identity": ("identity_0001", "identity_0002"),
     "access": ("access_20261015_0001",),
-    "platform": ("platform_20261015_0001",),
-    "resources": ("resources_20261015_0001",),
+    "platform": ("platform_20261018_0001",),
+    "resources": ("resources_20261018_0001",),
     "files": ("files_0001", "files_0002"),
     "runtime": ("runtime_0001", "runtime_0002", "runtime_0003"),
     "reverse": ("reverse_0001", "reverse_0002"),

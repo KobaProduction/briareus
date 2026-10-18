@@ -30,6 +30,7 @@ from common.owner_transactions import OwnerCommandOutcome
 from common.platform_db import PlatformDatabase
 from common.platform_errors import AccessDenied, Conflict, InvalidInput
 from projects._control_ledger import OwnerAuditRow, OwnerCommandRow, OwnerOutboxRow
+from projects._current_state import team_state
 from teams._persistence import TeamMembershipRow, TeamRow
 
 
@@ -238,7 +239,7 @@ class TeamOwnerSource:
         team = await tx.scalar(
             select(TeamRow).where(TeamRow.id == command.team_id).with_for_update()
         )
-        if team is None or team.version != command.expected_team_revision:
+        if team is None or team_state(team) != command.expected_team_revision:
             raise Conflict("Team owner revision does not match signed current authority")
         if decision.actor_role != "superuser" and team.owner_user_id != command.caller_user_id:
             raise AccessDenied("only current Team owner may manage Team membership")
@@ -265,20 +266,17 @@ class TeamOwnerSource:
                 .with_for_update()
             )
             if member is None:
-                member = TeamMembershipRow(team_id=team.id, user_id=target, active=True, version=1)
+                member = TeamMembershipRow(team_id=team.id, user_id=target, active=True)
                 tx.add(member)
             elif member.active:
                 raise Conflict("Team member already active")
             else:
                 member.active = True
-                member.version += 1
-            team.version += 1
             team.resource_revision += 1
             return {
                 "team_id": str(team.id),
                 "member_user_id": str(target),
-                "team_version": team.version,
-                "membership_version": member.version,
+                "state": format(team_state(team), "064x"),
                 "resource_revision": team.resource_revision,
                 "active": True,
             }
@@ -309,14 +307,11 @@ class TeamOwnerSource:
             if member is None or not member.active:
                 raise Conflict("Team membership is already inactive or absent")
             member.active = False
-            member.version += 1
-            team.version += 1
             team.resource_revision += 1
             return {
                 "team_id": str(team.id),
                 "member_user_id": str(target),
-                "team_version": team.version,
-                "membership_version": member.version,
+                "state": format(team_state(team), "064x"),
                 "resource_revision": team.resource_revision,
                 "active": False,
             }
@@ -354,12 +349,11 @@ class TeamOwnerSource:
             if member is None or await self._target_enabled(command, target) != target_revision:
                 raise AccessDenied("Team successor must be currently active Identity and member")
             team.owner_user_id = target
-            team.version += 1
             team.resource_revision += 1
             return {
                 "team_id": str(team.id),
                 "owner_user_id": str(target),
-                "team_version": team.version,
+                "state": format(team_state(team), "064x"),
                 "resource_revision": team.resource_revision,
             }
 

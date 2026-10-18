@@ -40,8 +40,8 @@ const words=computed(()=>locale.value==="ru"?{
   rights:"Разрешения",use:"Использование ресурсов",approve:"Одобрение AgentSession",
   selected:"Выбранный проект",absence:"Нет подтверждённых полномочий на операции в этом проекте",
   sessions:"Текущие сеансы",approvals:"Согласования",open:"Создать сеанс",
-  only:"Здесь только подтверждённые сервером идентификаторы, без вымышленных названий и прав",
-  noWrites:"Создание и изменение Team/Project требует отдельного Backend API; локальных операций здесь нет",
+  only:"Названия и права подтверждены сервером",
+  noWrites:"Управление командами и проектами доступно оператору в соответствующих разделах",
 }:{
   account:"Account and scopes",actor:"Platform user",teams:"Teams",
   projects:"Projects",user:"User",operator:"Operator",none:"No verified records",
@@ -49,8 +49,8 @@ const words=computed(()=>locale.value==="ru"?{
   approve:"Approve AgentSession",selected:"Selected project",
   absence:"No verified action rights for this project",
   sessions:"Current sessions",approvals:"Approvals",open:"Create session",
-  only:"Only server-verified IDs are shown; no invented names or permissions",
-  noWrites:"Team/Project creation and changes require a separate Backend API; there are no local mutations",
+  only:"Names and permissions are verified by the server",
+  noWrites:"Operators can manage teams and projects in their respective sections",
 })
 const openOwnerKey=computed(()=>sessionOpenOwnerKey(
   props.identity.issuer,props.identity.subject,props.identity.client_id,props.context.user.id,
@@ -86,15 +86,15 @@ const verifyApprover=(signal:AbortSignal)=>verify("approve_agent_session",signal
       </CardHeader>
       <CardContent class="space-y-4">
         <div v-if="view==='overview'" class="flex flex-wrap items-center gap-3">
-          <span class="break-all font-mono text-xs text-foreground">{{context.user.id}}</span>
+          <span class="font-medium text-foreground" :title="context.user.id">{{context.user.name||context.user.email||words.user}}</span>
           <Badge variant="outline">{{context.user.role==='operator'?words.operator:words.user}}</Badge>
         </div>
         <p class="text-xs font-semibold uppercase text-muted-foreground">{{words.teams}} ({{context.teams.length}})</p>
         <p v-if="!context.teams.length" class="rounded-lg border border-dashed border-border px-4 py-6 text-sm text-muted-foreground">{{words.none}}</p>
         <div v-else class="grid gap-2 sm:grid-cols-2">
           <div v-for="team in context.teams" :key="team.id" class="min-w-0 rounded-lg border border-border bg-muted/10 p-3">
-            <p class="break-all font-mono text-xs">{{team.id}}</p>
-            <p class="mt-2 text-xs text-muted-foreground">{{team.owner?words.owner:words.member}} · v{{team.version}}</p>
+            <p class="font-medium" :title="team.id">{{team.name||words.teams}}</p>
+            <p class="mt-2 text-xs text-muted-foreground">{{team.owner?words.owner:words.member}}</p>
           </div>
         </div>
         <p class="text-xs text-muted-foreground">{{words.noWrites}}</p>
@@ -111,14 +111,14 @@ const verifyApprover=(signal:AbortSignal)=>verify("approve_agent_session",signal
           <Button v-for="project in context.projects" :key="project.id" type="button" size="sm"
             :variant="selectedProjectId===project.id?'default':'outline'" :aria-pressed="selectedProjectId===project.id"
             :title="project.id" @click="selectProject(project.id)">
-            {{project.id.slice(0,8)}}…
+            {{project.name||words.projects}}
           </Button>
         </div>
         <div v-if="chosen" class="mt-3 rounded-xl border border-border bg-muted/20 p-3"
           :class="view==='sessions'?'space-y-2':'space-y-3 sm:p-4'">
-          <p class="break-all font-mono text-xs">{{chosen.id}}</p>
-          <p v-if="view!=='sessions'" class="text-xs text-muted-foreground">{{words.owner}}: {{chosen.owner.kind}} · {{chosen.owner.id}}</p>
-          <p class="text-xs text-muted-foreground">{{words.rights}} · v{{chosen.version}}</p>
+          <p class="font-medium" :title="chosen.id">{{chosen.name||words.projects}}</p>
+          <p v-if="view!=='sessions'" class="text-xs text-muted-foreground">{{words.owner}}: {{chosen.owner.kind==='user'?(context.user.name||context.user.email||words.user):(context.teams.find(t=>t.id===chosen?.owner.id)?.name||words.teams)}}</p>
+          <p class="text-xs text-muted-foreground">{{words.rights}}</p>
           <div class="flex flex-wrap gap-2">
             <Badge v-for="permission in chosen.permissions" :key="permission" variant="outline">
               {{permission==='use_resources'?words.use:words.approve}}

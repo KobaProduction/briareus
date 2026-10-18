@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import re
 import ssl
 import stat
@@ -22,6 +23,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Protocol
 from urllib.error import HTTPError, URLError
+from urllib.parse import quote
 from urllib.request import (
     HTTPHandler,
     HTTPRedirectHandler,
@@ -42,7 +44,11 @@ from projects._rauthy_user_links import (
 
 _INTERNAL_BASE = "http://briareus-rauthy:8080"
 _LOCAL_SANDBOX_BASE = "https://localhost:18444"
-_PUBLIC_ISSUER = "https://briareus.koba-nexus.ru/auth/v1/"
+_PUBLIC_ISSUER = (
+    "https://127.0.0.1/auth/v1/"
+    if os.environ.get("BRIAREUS_LOCAL_TESTING") == "1"
+    else "https://briareus.koba-nexus.ru/auth/v1/"
+)
 _LOCAL_SANDBOX_ISSUER = "https://localhost:18444/auth/v1/"
 _USERS_BY_ID = "/auth/v1/users/"
 _ID = re.compile(r"[A-Za-z0-9]{24}\Z", flags=re.ASCII)
@@ -110,9 +116,13 @@ class FixedRauthyUsersTransport:
                 raise ValueError("untrusted disposable Rauthy certificate") from None
             self._url = _LOCAL_SANDBOX_BASE
 
-    def _read_sync(self, subject: str) -> PrivateUserResponse:
+    def _read_sync(self, subject: str, *, by_email: bool = False) -> PrivateUserResponse:
         # No arbitrary URL or request-supplied host is ever contacted.
-        target = self._url + _USERS_BY_ID + subject
+        target = (
+            self._url
+            + (_USERS_BY_ID + "email/" if by_email else _USERS_BY_ID)
+            + quote(subject, safe="")
+        )
         request = Request(
             target,
             method="GET",
@@ -152,6 +162,19 @@ class FixedRauthyUsersTransport:
         except TimeoutError:
             raise RauthyUserStatusUnavailable("Rauthy Users API timed out") from None
 
+    async def read_by_email(self, *, email: str) -> PrivateUserResponse:
+        # Pinned Rauthy GET /users/email/{email}; same Users:read authority.
+        if (
+            not isinstance(email, str)
+            or not 3 <= len(email) <= 254
+            or "@" not in email
+            or any(ord(c) < 33 for c in email)
+        ):
+            raise RauthyUserStatusUnavailable("Invalid provider email selector")
+        return await asyncio.wait_for(
+            asyncio.to_thread(self._read_sync, email, by_email=True), timeout=3.5
+        )
+
 
 def _without_duplicate_keys(pairs: list[tuple[str, object]]) -> dict[str, object]:
     parsed: dict[str, object] = {}
@@ -181,6 +204,10 @@ class FileRauthyUsersTransport:
     async def read_user(self, *, subject: str) -> PrivateUserResponse:
         key = await asyncio.to_thread(self._key)
         return await FixedRauthyUsersTransport(users_read_api_key=key).read_user(subject=subject)
+
+    async def read_by_email(self, *, email: str) -> PrivateUserResponse:
+        reader = FixedRauthyUsersTransport(users_read_api_key=await asyncio.to_thread(self._key))
+        return await reader.read_by_email(email=email)
 
 
 class CurrentRauthyUserStatusReader:
@@ -255,8 +282,24 @@ class CurrentRauthyUserStatusReader:
                 expires_at = min(expires_at, account_expiry)
         else:
             active = enabled
-        # Do not retain email/groups/password/MFA/web-auth fields in Platform.
-        return VerifiedRauthyUserStatus(issuer, subject, active, expires_at)
+
+        # Display-only provider profile; never persist credentials or IdP roles.
+        def label(value: object) -> str | None:
+            if not isinstance(value, str):
+                return None
+            value = value.strip()
+            return value if 0 < len(value) <= 255 and not any(ord(c) < 32 for c in value) else None
+
+        email = label(data.get("email"))
+        name = (
+            label(
+                " ".join(
+                    filter(None, (label(data.get("given_name")), label(data.get("family_name"))))
+                )
+            )
+            or email
+        )
+        return VerifiedRauthyUserStatus(issuer, subject, active, expires_at, name, email)
 
 
 def platform_user_membership_with_rauthy(

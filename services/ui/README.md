@@ -379,35 +379,55 @@ Use a real browser at mobile and desktop viewports for UX acceptance. The
 native build and an HTTP response alone are not screenshot/click acceptance.
 `/panel/` without the dev query stays on the real sign-in screen.
 
-## Native localhost HTTP workflow (default development path)
+## Local development on 127.0.0.1
 
-**No Docker or HTTPS is required to build, view, iterate on, or visually test
-the Control Panel UI.** The default `bun run dev` and `bun run preview`
-both listen only on `127.0.0.1` and do not connect to a Backend without an
-explicit opt-in. For read-only and source-authorized same-origin API checks
-against the already-running LOCAL Runtime Gateway, opt in to the fixed
-API-only Vite proxy:
+Run the local service adapter from the repository root without rebuilding images:
 
-```sh
-cd services/ui
-BRIAREUS_LOCAL_HTTP_API_PROXY=gateway bun run dev -- --port 43198 --strictPort
-# HTTP browser UI: http://127.0.0.1:43198/panel/
-# GET /api/v1/auth/config and /session now reach ONLY native
-# Gateway http://127.0.0.1:18925 via fixed Host allowlist.
+```powershell
+docker compose --env-file .local/briareus/secrets/stack.env -f docker-compose.local.yaml up -d --no-build
+docker compose --env-file .local/briareus/secrets/stack.env -f docker-compose.local.yaml watch --no-up briareus-platform briareus-resources
 ```
 
-This is purely Vite **dev/preview tooling**. It never adds public
-upstreams, Docker DNS, Authorization grants, test identities, TLS trust
-exceptions or OAuth fixture code to the production bundle. Only the
-`/api/` prefix is proxied to the exact `127.0.0.1:18925` Runtime-owned
-native Gateway with its canonical fixed Host; no Rauthy operator/Admin
-REST or Hand transport is proxied. Passing actual GET /config200,
-session401 and /me401 confirms only safe HTTP routing, not sign-in.
+In a separate terminal:
 
-Current native authentication uses secure `__Host-` cookies. HTTP localhost
-remains useful for ordinary UI and read-only API iteration; native prelogin
-requires the Runtime-owned HTTPS origin. The UI does not offer hosted Rauthy
-navigation or weaken the provider's cookie, Origin, PKCE or Userinfo checks.
+```powershell
+cd services/ui
+bun run dev:local
+```
+
+Open `http://127.0.0.1/panel/`. Vite serves the actual Vue source, including
+its HMR WebSocket, and proxies `/api/` to the loopback BFF at port 18000.
+The API reloads its mounted Python source; Compose watch restarts only the
+selected owner when its mounted source changes. This requires the existing
+local images and ignored `.local/briareus/secrets/stack.env` provisioning.
+Normal service Compose files retain their deployment responsibilities.
+
+`BRIAREUS_LOCAL_TESTING=1` explicitly selects the fixed HTTP browser origin
+and HTTPS Rauthy issuer `https://127.0.0.1/auth/v1`. Provider TLS still uses
+the local CA inside the application transport. No Windows certificate trust
+change is needed. All published local development ports bind to loopback;
+this opt-in is not a public Development configuration.
+The local adapter sets Rauthy's `ADMIN_FORCE_MFA=false` so the existing local
+administrator can provision development users without enrolling a passkey.
+
+Local credentials are in the ignored, access-restricted
+`.local/briareus/secrets/admin-credentials.json`; do not copy them into docs,
+Git, URLs or command arguments. Rauthy owns the account and password. A fresh
+Platform database requires explicit offline first-operator enrollment of the
+verified existing Rauthy administrator, independently of provider login.
+
+Operators manage named teams and projects through `/api/v1/platform/inventory`
+and `/api/v1/platform/commands`. Team membership refers to real linked Rauthy
+accounts; connecting an account uses its email and grants only the ordinary
+Platform user role. Passwords and provider administrator roles are not managed
+by these controls. Writes retain their operation UUID for safe retries.
+Teams, projects and team memberships have no persisted `version` column or
+version label in this UI. Renaming checks the previously displayed name;
+owner operations read current authority under a transaction lock.
+
+Browser sessions currently have an absolute maximum lifetime of 15 minutes.
+Activity and membership polling do not extend login. Vite's development
+WebSocket handles source updates; it is not an application data subscription.
 
 ## Local integration acceptance
 

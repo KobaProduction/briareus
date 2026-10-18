@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import json
 import os
 import socket
 import stat
@@ -101,3 +103,51 @@ class UnixPlatformPeer:
             datetime.fromtimestamp(expiry, UTC),
             project,
         )
+
+    async def management(
+        self, payload: dict[str, object], *, expires_at: datetime
+    ) -> tuple[int, dict[str, object]]:
+        connection = await self.current_transport()
+        now = int(datetime.now(UTC).timestamp())
+        expiry = min(now + 15, int(expires_at.timestamp()))
+        if expiry <= now:
+            raise ValueError("Current Panel authority expired")
+        material = json.dumps(
+            payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True
+        ).encode()
+        token = jwt.encode(
+            {
+                "iss": "briareus:control-panel-api",
+                "aud": "briareus:platform",
+                "sub": payload["subject"],
+                "rauthy_issuer": payload["issuer"],
+                "project_uuid": None,
+                "purpose": "platform-management-v1",
+                "command_digest": hashlib.sha256(material).hexdigest(),
+                "iat": now,
+                "nbf": now,
+                "exp": expiry,
+                "jti": str(uuid4()),
+            },
+            self._key,
+            algorithm="EdDSA",
+            headers={"typ": "briareus-panel-delegation+jwt"},
+        )
+        async with connection.client.stream(
+            "POST",
+            "http://briareus-platform:8000/internal/v1/platform/manage",
+            content=material,
+            headers={"Authorization": "Bearer " + token, "Content-Type": "application/json"},
+            follow_redirects=False,
+        ) as response:
+            if response.headers.get("content-type", "").split(";")[0] != "application/json":
+                raise ValueError("Invalid Platform management response")
+            body = bytearray()
+            async for chunk in response.aiter_bytes():
+                body.extend(chunk)
+                if len(body) > 262144:
+                    raise ValueError("Platform management response exceeds bound")
+            result = json.loads(body)
+            if not isinstance(result, dict):
+                raise ValueError("Invalid Platform management response")
+            return response.status_code, result

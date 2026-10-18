@@ -7,6 +7,9 @@ provide the kernel peer credentials required by the attestor.
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import hmac
+import json
 import os
 import socket
 import stat
@@ -60,7 +63,7 @@ class UnixPanelAuthority:
         )
 
     async def verify(
-        self, request: Request, query: PlatformContextQuery
+        self, request: Request, query: PlatformContextQuery, *, purpose: str = "platform-current-v1"
     ) -> VerifiedPanelContextPeer:
         if request.scope.get("briareus.unix_peer_uid") != 1001:
             raise PanelContextNotAuthenticated("Control Panel kernel peer required")
@@ -94,7 +97,7 @@ class UnixPanelAuthority:
             )
             project = str(query.project_uuid) if query.project_uuid else None
             if (
-                claims["purpose"] != "platform-current-v1"
+                claims["purpose"] != purpose
                 or claims["sub"] != query.subject
                 or claims["rauthy_issuer"] != query.issuer
                 or claims["project_uuid"] != project
@@ -106,6 +109,7 @@ class UnixPanelAuthority:
                 raise ValueError("Delegation does not bind this exact query")
         except (jwt.PyJWTError, ValueError, TypeError, KeyError):
             raise PanelContextNotAuthenticated("Invalid Panel delegation") from None
+        request.scope["briareus.verified_panel_claims"] = claims
         return VerifiedPanelContextPeer(
             "briareus:platform",
             "control-panel-api",
@@ -114,6 +118,20 @@ class UnixPanelAuthority:
             datetime.fromtimestamp(claims["exp"], UTC),
             query.project_uuid,
         )
+
+    async def verify_management(self, request: Request, payload: dict[str, object]) -> datetime:
+        peer = await self.verify(
+            request,
+            PlatformContextQuery(issuer=payload["issuer"], subject=payload["subject"]),
+            purpose="platform-management-v1",
+        )
+        expected = hashlib.sha256(
+            json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode()
+        ).hexdigest()
+        claims = request.scope["briareus.verified_panel_claims"]
+        if not hmac.compare_digest(str(claims.get("command_digest", "")), expected):
+            raise PanelContextNotAuthenticated("Management command scope mismatch")
+        return peer.expires_at
 
 
 class UnixPeerProtocol(H11Protocol):

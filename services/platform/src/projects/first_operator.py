@@ -139,7 +139,8 @@ def main() -> None:
     parser.add_argument("--project-name", default="Local workspace")
     parser.add_argument("--operator-key", required=True)
     parser.add_argument("--approve", action="store_true")
-    asyncio.run(enroll(parser.parse_args()))
+    args = parser.parse_args()
+    asyncio.run(enroll(args))
 
 
 if __name__ == "__main__":

@@ -3,10 +3,9 @@
 **Owner:** Backend, approved Briareus MCP Development Application. This
 service is independent from Gateway, Control Panel UI/API and External Services.
 
-- Source: `services/resources/src/` (all own Python packages; root legacy
-  `services/projects` modules were copied byte-for-byte for the transition).
+- Source: `services/resources/src/` (canonical owner packages).
 - Service migrations: **single clean current-schema baseline**
-  `resources_20261015_0001`, built from current Resource Catalog ORM tables,
+  `resources_20261018_0001`, built from current Resource Catalog ORM tables,
   indexes and constraints. Historical resources_0001→0002 is RETIRED from
   the experimental new epoch. A completely empty `briareus_resources`
   logical database is required; no stamp, partial import or old-data upgrade.
@@ -105,7 +104,7 @@ No live SQL/mTLS/Rauthy/MCP acceptance is claimed.
 
 The owner has selected fresh schema initialization instead of dragging
 published legacy migration steps through disposable local/Development data.
-The sole accepted revision is `resources_20261015_0001`. It creates the
+The sole accepted revision is `resources_20261018_0001`. It creates the
 current integration, variable, credential lease, idempotency, audit/outbox
 and external-operation models, including the correct composite original
 UUID/phase uniqueness, directly from reviewed SQLAlchemy source. No old

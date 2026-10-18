@@ -14,17 +14,17 @@ export const LOCAL_GATEWAY_HOST="briareus.koba-nexus.ru"
 /** A recognized explicit opt-in; no arbitrary URL or remote proxy allowed. */
 export function localHttpProxy(enabled: string | undefined): Record<string,ProxyOptions> | undefined {
   if(enabled===undefined||enabled==="")return undefined
-  if(enabled!=="gateway")throw new Error(
-    `${LOCAL_HTTP_PROXY_ENV} only supports 'gateway' on 127.0.0.1; no remote backend URLs allowed`
+  if(enabled!=="gateway"&&enabled!=="panel")throw new Error(
+    `${LOCAL_HTTP_PROXY_ENV} only supports 'gateway' or 'panel' on 127.0.0.1`
   )
   return {
     "/api/":{
-      target:LOCAL_GATEWAY_URL,
+      target:enabled==="panel"?"http://127.0.0.1:18000":LOCAL_GATEWAY_URL,
       changeOrigin:false,
       // Existing Gateway has an exact, source-owned canonical Host allowlist.
       // This is ONLY local fixed loopback forwarding; it does NOT relax a
       // write Origin check or produce/authorize a cookie or bearer.
-      headers:{host:LOCAL_GATEWAY_HOST},
+      headers:{host:enabled==="panel"?"127.0.0.1":LOCAL_GATEWAY_HOST},
       timeout:8000,
       proxyTimeout:8000,
     },

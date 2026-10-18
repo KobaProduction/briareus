@@ -17,6 +17,7 @@ import httpx
 from pydantic import SecretStr
 
 from ._api_paths import REGISTERED_RAUTHY_CALLBACK_PATH
+from ._local_provider_transport import provider_http_client
 from ._native_credentials import NativeFirstFactorRequest
 from ._oidc import _pkce_s256
 from ._oidc_browser import PrivateNativeOtpPending, PrivateNativePending
@@ -101,7 +102,7 @@ class PinnedNativeRauthyInit:
         # Fresh per-attempt client means Rauthy sessions can never accidentally
         # bleed between concurrent human logins via a global CookieJar.
         try:
-            async with httpx.AsyncClient(
+            async with provider_http_client(
                 verify=self._tls,
                 trust_env=False,
                 follow_redirects=False,
@@ -127,7 +128,7 @@ class PinnedNativeRauthyInit:
     async def issue_pow(self) -> str:
         """Get one official provider challenge; only upstream validates its solution."""
         try:
-            async with httpx.AsyncClient(
+            async with provider_http_client(
                 verify=self._tls,
                 trust_env=False,
                 follow_redirects=False,
@@ -180,7 +181,7 @@ class PinnedNativeRauthyInit:
         began = datetime.now(UTC)
         try:
             async with (
-                httpx.AsyncClient(
+                provider_http_client(
                     verify=self._tls,
                     trust_env=False,
                     follow_redirects=False,
@@ -281,7 +282,7 @@ class PinnedNativeRauthyInit:
         ):
             raise NativeProviderProtocolUnavailable("OTP start original Rauthy context unavailable")
         try:
-            async with httpx.AsyncClient(
+            async with provider_http_client(
                 verify=self._tls, trust_env=False, follow_redirects=False, timeout=5.0
             ) as client:
                 status, headers, raw = await _bounded_native_reply(
@@ -333,7 +334,7 @@ class PinnedNativeRauthyInit:
         ):
             raise NativeProviderProtocolUnavailable("OTP finish original state unavailable")
         try:
-            async with httpx.AsyncClient(
+            async with provider_http_client(
                 verify=self._tls, trust_env=False, follow_redirects=False, timeout=8.0
             ) as client:
                 status, headers, raw = await _bounded_native_reply(

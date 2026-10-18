@@ -35,6 +35,8 @@ class CurrentRauthyUserLink:
     role: Literal["user", "operator"]
     revision: int
     expires_at: datetime
+    name: str | None = None
+    email: str | None = None
 
 
 class TrustedRauthyUserLinkPort(Protocol):
@@ -46,17 +48,17 @@ class TrustedRauthyUserLinkPort(Protocol):
 @dataclass(frozen=True, slots=True)
 class PlatformTeamMembership:
     team_id: UUID
-    version: int
     owner: bool
+    name: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
 class PlatformProjectMembership:
     project_id: UUID
-    version: int
     owner_kind: Literal["user", "team"]
     owner_id: UUID
     permissions: tuple[Literal["use_resources", "approve_agent_session"], ...]
+    name: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -69,6 +71,8 @@ class CurrentRauthyPlatformMembership:
     expires_at: datetime
     teams: tuple[PlatformTeamMembership, ...]
     projects: tuple[PlatformProjectMembership, ...]
+    name: str | None = None
+    email: str | None = None
 
 
 class PlatformOidcMembershipProjection:
@@ -141,8 +145,8 @@ class PlatformOidcMembershipProjection:
             teams = tuple(
                 PlatformTeamMembership(
                     team_id=team.id,
-                    version=member.version,
                     owner=team.owner_user_id == link.user_id,
+                    name=team.name,
                 )
                 for team, member in team_rows
             )
@@ -183,7 +187,7 @@ class PlatformOidcMembershipProjection:
                 result.append(
                     PlatformProjectMembership(
                         project_id=project.id,
-                        version=project.version,
+                        name=project.name,
                         owner_kind=owner_kind,
                         owner_id=owner_id,
                         permissions=(
@@ -206,6 +210,8 @@ class PlatformOidcMembershipProjection:
             expires_at=link.expires_at,
             teams=teams,
             projects=tuple(result),
+            name=link.name,
+            email=link.email,
         )
 
     async def resolve_project(
@@ -263,12 +269,12 @@ class PlatformOidcMembershipProjection:
                 owner_kind = "team"
                 owner_id = team.id
                 approve = team.owner_user_id == link.user_id
-                teams = (PlatformTeamMembership(team.id, member.version, approve),)
+                teams = (PlatformTeamMembership(team.id, approve, team.name),)
             else:
                 raise PlatformSubjectLinkUnavailable("exact Project owner scope invalid")
             membership = PlatformProjectMembership(
                 project_id=project.id,
-                version=project.version,
+                name=project.name,
                 owner_kind=owner_kind,
                 owner_id=owner_id,
                 permissions=(
@@ -286,4 +292,6 @@ class PlatformOidcMembershipProjection:
             expires_at=link.expires_at,
             teams=teams,
             projects=(membership,),
+            name=link.name,
+            email=link.email,
         )

@@ -160,6 +160,24 @@ async function nativeBrowserFixture(replies:Response[],test:(calls:{url:string;i
   }
 }
 describe("native password sign-in from explicit user action",()=>{
+  it("allows HTTP only on the exact loopback browser origin",async()=>{
+    await nativeBrowserFixture([],async calls=>{
+      Object.defineProperty(globalThis,"window",{configurable:true,value:{
+        location:{protocol:"http:",origin:"http://127.0.0.1"},isSecureContext:true,
+      }})
+      await submitNativePasswordLogin("fixture@example.invalid","fixture-only-password",new AbortController().signal)
+      expect(calls.map(x=>x.url)).toEqual(["/api/v1/auth/capabilities"])
+      calls.length=0
+      for(const origin of ["http://example.com","http://127.0.0.1:8080"]){
+        Object.defineProperty(globalThis,"window",{configurable:true,value:{
+          location:{protocol:"http:",origin},isSecureContext:true,
+        }})
+        expect((await submitNativePasswordLogin("fixture@example.invalid","fixture-only-password",
+          new AbortController().signal)).kind).toBe("unavailable")
+      }
+      expect(calls).toHaveLength(0)
+    })
+  })
   it("does not describe a masked provider failure as an incorrect password",async()=>{
     await nativeBrowserFixture([
       apiReply(200,nativeCapability),apiReply(201,nativeInit),

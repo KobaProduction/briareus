@@ -23,6 +23,7 @@ from common.owner_contracts import (
 )
 from common.owner_proof_signing import OwnerVerifiedSourceSnapshot, SourceOwnerSigner
 from common.platform_db import PlatformDatabase
+from projects._current_state import membership_state, project_state, team_state
 from projects._persistence import ProjectRow
 from teams._persistence import TeamMembershipRow, TeamRow
 
@@ -98,7 +99,7 @@ class ControlOwnerProofReader:
             )
             if (
                 project is None
-                or project.version != command.expected_control_revision
+                or project_state(project) != command.expected_control_revision
                 or project.resource_revision != command.expected_control_resource_revision
                 or project.lifecycle_status != expected_state
             ):
@@ -137,8 +138,8 @@ class ControlOwnerProofReader:
                     .with_for_update()
                 )
                 member_active = member is not None
-                membership_version = member.version if member is not None else None
-                team_version = team.version
+                membership_version = membership_state(member) if member is not None else None
+                team_version = team_state(team)
                 team_resource_revision = team.resource_revision
                 team_owner_id = team.owner_user_id
             if (
@@ -175,7 +176,7 @@ class ControlOwnerProofReader:
                 caller_user_id=actor.user_id,
                 project_id=project.id,
                 agent_session_uuid=command.session_uuid,
-                owner_revision=project.version,
+                owner_revision=project_state(project),
                 active=True,
                 role=actor.role,
                 capabilities=(command.operation,),
@@ -188,7 +189,7 @@ class ControlOwnerProofReader:
                 team_resource_revision=team_resource_revision,
                 epoch_components=(
                     str(project.id),
-                    str(project.version),
+                    str(project_state(project)),
                     str(project.resource_revision),
                     str(owner_user or owner_team),
                     project.lifecycle_status,

@@ -14,7 +14,7 @@ from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_validator
 
-from ._api_paths import AUTH_API_PREFIX, REGISTERED_RAUTHY_CALLBACK_PATH
+from ._api_paths import AUTH_API_PREFIX
 from ._native_credentials import NativeFirstFactorRequest
 from ._oidc import OidcProviderUnavailable, RauthyOidcAdapter, _unique_oidc_fields
 from ._oidc_browser import (
@@ -28,7 +28,13 @@ from ._oidc_browser import (
     _strict_browser_cookies,
 )
 from ._oidc_id_token import OidcIdentityKeysUnavailable, OidcIdentityRejected
-from ._oidc_origin_policy import PUBLIC_ORIGIN, local_browser_host, resolve_browser_origin
+from ._oidc_origin_policy import (
+    BROWSER_ORIGIN,
+    PUBLIC_HOST,
+    browser_callback_uri,
+    local_browser_host,
+    resolve_browser_origin,
+)
 from ._rauthy_native_init import PinnedNativeRauthyInit
 from ._rauthy_native_protocol import NativeProviderProtocolUnavailable, PrivateNativeLoginStep
 
@@ -86,12 +92,12 @@ def native_login_router(
         provider_issuer=provider.issuer,
         provider_client=provider.client_id,
     )
-    host = local_browser_host(test_only_local_origin) or "briareus.koba-nexus.ru"
+    host = local_browser_host(test_only_local_origin) or PUBLIC_HOST
     if (
         native_provider.issuer != provider.issuer
         or native_provider.client_id != provider.client_id
-        or native_provider.callback != origin + REGISTERED_RAUTHY_CALLBACK_PATH
-        or (test_only_local_origin is None and origin != PUBLIC_ORIGIN)
+        or native_provider.callback != browser_callback_uri(origin)
+        or (test_only_local_origin is None and origin != BROWSER_ORIGIN)
     ):
         raise ValueError("native credentials require one fixed matching issuer/client/callback")
     router = APIRouter()
@@ -278,7 +284,7 @@ def native_login_router(
         args = parse_qs(urlsplit(step.secret.get_secret_value()).query, strict_parsing=True)
         login = await provider.authenticate_authorization_code(
             code=args["code"][0],
-            redirect_uri=origin + REGISTERED_RAUTHY_CALLBACK_PATH,
+            redirect_uri=browser_callback_uri(origin),
             code_verifier=pending.verifier,
             expected_nonce=pending.nonce,
             expected_issuer=args["iss"][0],

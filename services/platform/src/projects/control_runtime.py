@@ -22,7 +22,12 @@ from common.platform_db import OwnerDatabaseSettings, PlatformDatabase
 from ._oidc_access_project_api import TrustedAccessProjectAttestor, oidc_access_project_router
 from ._oidc_context_api import TrustedPanelContextAttestor, current_platform_context_router
 from ._oidc_membership_projection import PlatformOidcMembershipProjection
-from ._rauthy_user_status import platform_user_membership_with_rauthy
+from ._panel_management import PlatformAdministration, management_router
+from ._rauthy_user_status import (
+    FileRauthyUsersTransport,
+    FixedRauthyUsersTransport,
+    platform_user_membership_with_rauthy,
+)
 
 
 def create_platform_app(
@@ -54,10 +59,11 @@ def create_platform_app(
     # Never expose even an injected verified member-source before the owning
     # Platform schema and private ingress have passed startup verification.
     current_membership: PlatformOidcMembershipProjection | None = None
+    administration: PlatformAdministration | None = None
 
     @asynccontextmanager
     async def platform_membership_lifespan(current_app: FastAPI) -> AsyncIterator[None]:
-        nonlocal current_membership
+        nonlocal current_membership, administration
         # No independent SQL/issuer request before the owner migration and
         # authenticated ingress have succeeded. Failing any step aborts
         # startup instead of leaving a half-enabled current User endpoint.
@@ -79,12 +85,29 @@ def create_platform_app(
                     users_read_key_file=users_read_key_file,
                     test_only_local_ca_pem=test_only_local_rauthy_ca_pem,
                 )
+                provider = (
+                    FileRauthyUsersTransport(users_read_key_file)
+                    if users_read_key_file
+                    else FixedRauthyUsersTransport(
+                        users_read_api_key=users_read_api_key,
+                        test_only_local_ca_pem=test_only_local_rauthy_ca_pem,
+                    )
+                )
+                administration = PlatformAdministration(
+                    reader_database, current_membership, provider
+                )
                 yield
             finally:
+                administration = None
                 current_membership = None
                 await reader_database.close()
 
     app.router.lifespan_context = platform_membership_lifespan
+    app.include_router(
+        management_router(
+            lambda: administration, panel_attestor if trusted_ingress is not None else None
+        )
+    )
 
     def verified_current_membership() -> PlatformOidcMembershipProjection | None:
         return current_membership

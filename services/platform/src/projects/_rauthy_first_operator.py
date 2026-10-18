@@ -132,6 +132,7 @@ class FirstOperatorBootstrap:
         # The verified provider status and owner approval were fetched BEFORE
         # entering SQL; no outbound requests under the owner transaction lock.
         from projects._control_ledger import OwnerAuditRow, OwnerOutboxRow
+        from projects._current_state import project_state
         from projects._persistence import ProjectRow
 
         # A failed/partial Development reset can leave audit, scopes, agent
@@ -185,7 +186,6 @@ class FirstOperatorBootstrap:
                     lifecycle_status="active",
                     owner_user_id=verified.user_uuid,
                     owner_team_id=None,
-                    version=1,
                     resource_revision=0,
                     created_at=now,
                 )
@@ -209,7 +209,7 @@ class FirstOperatorBootstrap:
                         project_id=project.id,
                         action="project.first_operator_workspace_bootstrapped",
                         object_id=str(project.id),
-                        owner_revision="project-v1",
+                        owner_revision=format(project_state(project), "064x"),
                         details={"owner_user_id": str(verified.user_uuid)},
                     )
                 )
@@ -217,11 +217,10 @@ class FirstOperatorBootstrap:
                     OwnerOutboxRow(
                         operation_uuid=verified.operation_uuid,
                         event_name="project.first_operator_workspace_bootstrapped",
-                        owner_revision="project-v1",
+                        owner_revision=format(project_state(project), "064x"),
                         event_payload={
                             "project_id": str(project.id),
                             "owner_user_id": str(verified.user_uuid),
-                            "revision": 1,
                         },
                     )
                 )

@@ -17,13 +17,12 @@ if(!/^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/.test(manifest.version)){
  * provider endpoints. Only existing local Gateway on 127.0.0.1:18925.
  * This does NOT enable secure OAuth callbacks or bypass server permissions.
  */
-const localProxy=localHttpProxy(env[LOCAL_HTTP_PROXY_ENV])
-export default defineConfig({
+export default defineConfig(({mode})=>({
   define:{__BRIAREUS_UI_PACKAGE_VERSION__:JSON.stringify(manifest.version)},
   // One public Gateway serves the Panel at /panel/; no /api/ assets.
   base:"/panel/",
   plugins:[vue(),tailwindcss()],
   resolve:{alias:{"@":fileURLToPath(new URL("./src",import.meta.url))}},
-  server:{host:"127.0.0.1",proxy:localProxy},
-  preview:{host:"127.0.0.1",proxy:localProxy},
-})
+  server:{host:"127.0.0.1",proxy:localHttpProxy(env[LOCAL_HTTP_PROXY_ENV]??(mode==="local-testing"?"panel":undefined))},
+  preview:{host:"127.0.0.1",proxy:localHttpProxy(env[LOCAL_HTTP_PROXY_ENV])},
+}))

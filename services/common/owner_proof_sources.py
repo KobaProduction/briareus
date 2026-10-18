@@ -13,6 +13,7 @@ from datetime import UTC, datetime
 from typing import ClassVar, Literal, Protocol, cast
 from uuid import UUID
 
+from projects._current_state import membership_state, project_state, team_state
 from pydantic import SecretStr
 from sqlalchemy import select
 
@@ -210,7 +211,7 @@ class CurrentControlProofSource(_PrivateOwnerProofBase):
             )
             if (
                 project is None
-                or project.version != request.expected_control_revision
+                or project_state(project) != request.expected_control_revision
                 or project.resource_revision != request.expected_control_resource_revision
                 or project.lifecycle_status != expected_lifecycle
             ):
@@ -229,8 +230,11 @@ class CurrentControlProofSource(_PrivateOwnerProofBase):
                 )
                 if team is None or member is None:
                     raise OwnerAuthorityUnavailable("Control Team membership unavailable")
-                team_version, team_resource_version = team.version, team.resource_revision
-                team_epoch = f"{team.id}:{team.version}:{team.resource_revision}:{member.version}"
+                team_version, team_resource_version = team_state(team), team.resource_revision
+                team_epoch = (
+                    f"{team.id}:{team_state(team)}:{team.resource_revision}:"
+                    f"{membership_state(member)}"
+                )
             elif project.owner_user_id != request.caller_user_id:
                 # Global superuser recovery uses a separately accepted, explicit
                 # operator protocol; Project UUID ownership alone is not proof.
@@ -262,7 +266,7 @@ class CurrentControlProofSource(_PrivateOwnerProofBase):
                 caller_user_id=request.caller_user_id,
                 project_id=request.project_id,
                 agent_session_uuid=request.session_uuid,
-                owner_revision=project.version,
+                owner_revision=project_state(project),
                 active=True,
                 role=None,
                 capabilities=(request.operation,),
@@ -275,7 +279,7 @@ class CurrentControlProofSource(_PrivateOwnerProofBase):
                 team_resource_revision=team_resource_version,
                 epoch_components=(
                     str(project.id),
-                    str(project.version),
+                    str(project_state(project)),
                     str(project.resource_revision),
                     project.lifecycle_status,
                     str(request.caller_user_id),

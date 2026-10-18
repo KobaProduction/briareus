@@ -3,10 +3,9 @@
 **Owner:** Backend, approved Briareus MCP Development Application. This
 service is independent from Gateway, Control Panel UI/API and External Services.
 
-- Source: `services/platform/src/` (all own Python packages; root legacy
-  `services/projects` modules were copied byte-for-byte for the transition).
+- Source: `services/platform/src/` (canonical owner packages).
 - Service migrations: **one clean reviewed current-schema baseline**
-  `platform_20261015_0001`, generated from the complete current Platform
+  `platform_20261018_0001`, generated from the complete current Platform
   SQLAlchemy metadata (Teams, Projects, Users link, agents, audits, scope
   events and ledgers). Historical platform_0001→0004 is RETIRED from the
   candidate source. This new epoch requires a genuinely EMPTY
@@ -35,6 +34,7 @@ The Compose Watch paths are exactly:
 - `services/platform/**` — service source, uv dependencies, Compose and migrations
 - `services/common/**` — temporarily imported shared Python contracts/runtime
 - `shared/build/**` — single shared build provenance utility
+- `services/external/**` — shared External runtime dependency
 
 The service Dockerfile copies only its own local code plus explicitly selected
 shared/common source files and one `shared/build/runtime_write_provenance.py`
@@ -49,7 +49,7 @@ Retain the **same approved** Coolify UUID (no new Application). Repo
 
 - Base Directory: `/services/platform`
 - Docker Compose location: `/docker-compose.coolify.yaml`
-- Watch Paths: the three paths above, in the same order
+- Watch Paths: the four paths above, in the same order
 - Deployment is Git-backed, not a UI-only Compose replacement.
 - Existing secret references, domain (none), networking and DB identity are
   unchanged. The old `deploy/platform/` source remains for rollback until the
@@ -96,7 +96,7 @@ real trusted upstream/owner ports, not caller headers or supplied UUID.
 **Owner-approved experimental greenfield rebaseline:** The prior legacy
 Platform 0001→0004 chain has been removed from the new source tree; all the
 current Team/Project lifecycle, phased command-idempotency, Rauthy User-link
-and scoped owner tables are part of ONE reviewed `platform_20261015_0001`
+and scoped owner tables are part of ONE reviewed `platform_20261018_0001`
 revision. The baseline DDL comes directly from the current Platform ORM,
 not a hand-edited partial bootstrap. A unique epoch/version ID prevents a
 previous Development Alembic 0001/0003/0004 row from masquerading as current.

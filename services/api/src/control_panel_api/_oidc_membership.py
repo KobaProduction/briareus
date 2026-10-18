@@ -24,7 +24,7 @@ from ._oidc_browser import (
     PanelOidcSession,
     _strict_browser_cookies,
 )
-from ._oidc_origin_policy import local_browser_host
+from ._oidc_origin_policy import PUBLIC_ORIGIN, local_browser_host, resolve_browser_origin
 
 if TYPE_CHECKING:
     from ._oidc_approvals import ApprovalManagementPort
@@ -40,17 +40,17 @@ _MAX_RELATIONS = 100
 @dataclass(frozen=True, slots=True)
 class PlatformTeamContext:
     team_uuid: UUID
-    version: int
     owner: bool
+    name: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
 class PlatformProjectContext:
     project_uuid: UUID
-    version: int
     owner_kind: Literal["user", "team"]
     owner_uuid: UUID
     permissions: tuple[Literal["use_resources", "approve_agent_session"], ...]
+    name: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -65,6 +65,8 @@ class ResolvedPlatformUser:
     expires_at: datetime
     teams: tuple[PlatformTeamContext, ...]
     projects: tuple[PlatformProjectContext, ...]
+    name: str | None = None
+    email: str | None = None
 
 
 class CurrentPlatformUserSource(Protocol):
@@ -100,6 +102,7 @@ def platform_membership_router(
     test_only_local_origin: str | None = None,
     expected_issuer: str | None = None,
     expected_client_id: str | None = None,
+    management_peer: object | None = None,
 ) -> APIRouter:
     if (expected_issuer is None) != (expected_client_id is None):
         raise ValueError("OIDC membership realm must bind issuer and client together")
@@ -196,8 +199,6 @@ def platform_membership_router(
                 or not isinstance(team.team_uuid, UUID)
                 or team.team_uuid.version != 4
                 or team.team_uuid in seen_teams
-                or type(team.version) is not int
-                or team.version < 1
                 or type(team.owner) is not bool
             ):
                 return fail(503, "PLATFORM_MEMBERSHIP_PROOF_INVALID")
@@ -211,8 +212,6 @@ def platform_membership_router(
                 or project.project_uuid.version != 4
                 or project.owner_uuid.version != 4
                 or project.project_uuid in seen_projects
-                or type(project.version) is not int
-                or project.version < 1
                 or project.owner_kind not in {"user", "team"}
                 or (project.owner_kind == "user" and project.owner_uuid != proof.user_uuid)
                 or (project.owner_kind == "team" and project.owner_uuid not in seen_teams)
@@ -261,15 +260,25 @@ def platform_membership_router(
                 "authenticated": True,
                 "authority": "platform",
                 "rauthy": {"issuer": proof.issuer, "subject": proof.subject},
-                "user": {"id": str(proof.user_uuid), "role": proof.role, "enabled": True},
+                "user": {
+                    "id": str(proof.user_uuid),
+                    "role": proof.role,
+                    "enabled": True,
+                    "name": proof.name,
+                    "email": proof.email,
+                },
                 "teams": [
-                    {"id": str(item.team_uuid), "version": item.version, "owner": item.owner}
+                    {
+                        "id": str(item.team_uuid),
+                        "owner": item.owner,
+                        "name": item.name,
+                    }
                     for item in proof.teams
                 ],
                 "projects": [
                     {
                         "id": str(item.project_uuid),
-                        "version": item.version,
+                        "name": item.name,
                         "owner": {
                             "kind": item.owner_kind,
                             "id": str(item.owner_uuid),
@@ -282,6 +291,22 @@ def platform_membership_router(
             },
             headers=_NO_STORE,
         )
+
+    from ._platform_management import platform_management_router
+
+    router.include_router(
+        platform_management_router(
+            current_context=current_context,
+            peer=management_peer,
+            browser_origin=resolve_browser_origin(
+                test_origin=test_only_local_origin,
+                provider_issuer=expected_issuer,
+                provider_client=expected_client_id,
+            )
+            if expected_issuer
+            else PUBLIC_ORIGIN,
+        )
+    )
 
     # Imported only after the identity DTO is defined to avoid cyclic
     # module initialization; approval endpoints share the exact same proof.

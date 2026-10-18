@@ -176,9 +176,13 @@ class CatalogSourceService:
                 operation_uuid=decision.request.operation_uuid,
                 service_audience=service_audience,
                 correlation_id=decision.request.operation_uuid,
-                project_version=decision.request.expected_control_revision,
+                project_state_hash=format(decision.request.expected_control_revision, "064x"),
                 project_resource_revision=decision.request.expected_control_resource_revision,
-                team_version=decision.request.expected_team_revision,
+                team_state_hash=(
+                    format(decision.request.expected_team_revision, "064x")
+                    if decision.request.expected_team_revision is not None
+                    else None
+                ),
                 team_resource_revision=decision.request.expected_team_resource_revision,
                 session_version=decision.request.expected_access_revision,
                 expires_at=expires,
@@ -262,9 +266,14 @@ class CatalogSourceService:
                 or lease.redeemed_at is not None
                 or lease.expires_at <= datetime.now(UTC)
                 or lease.session_version != request.expected_access_revision
-                or lease.project_version != request.expected_control_revision
+                or lease.project_state_hash != format(request.expected_control_revision, "064x")
                 or lease.project_resource_revision != request.expected_control_resource_revision
-                or lease.team_version != request.expected_team_revision
+                or lease.team_state_hash
+                != (
+                    format(request.expected_team_revision, "064x")
+                    if request.expected_team_revision is not None
+                    else None
+                )
                 or lease.team_resource_revision != request.expected_team_resource_revision
             ):
                 raise AccessDenied("credential lease consumed, expired or no longer authorized")
@@ -797,9 +806,13 @@ class CatalogSourceService:
                 operation_uuid=request.operation_uuid,
                 service_audience=service_audience,
                 correlation_id=request.operation_uuid,
-                project_version=request.expected_control_revision,
+                project_state_hash=format(request.expected_control_revision, "064x"),
                 project_resource_revision=request.expected_control_resource_revision,
-                team_version=request.expected_team_revision,
+                team_state_hash=(
+                    format(request.expected_team_revision, "064x")
+                    if request.expected_team_revision is not None
+                    else None
+                ),
                 team_resource_revision=request.expected_team_resource_revision,
                 session_version=request.expected_access_revision,
                 expires_at=expiry,
@@ -887,9 +900,14 @@ class CatalogSourceService:
                 or lease.redeemed_at is not None
                 or lease.expires_at <= datetime.now(UTC)
                 or lease.session_version != request.expected_access_revision
-                or lease.project_version != request.expected_control_revision
+                or lease.project_state_hash != format(request.expected_control_revision, "064x")
                 or lease.project_resource_revision != request.expected_control_resource_revision
-                or lease.team_version != request.expected_team_revision
+                or lease.team_state_hash
+                != (
+                    format(request.expected_team_revision, "064x")
+                    if request.expected_team_revision is not None
+                    else None
+                )
                 or lease.team_resource_revision != request.expected_team_resource_revision
             ):
                 raise AccessDenied("variable lease consumed, expired or owner changed")

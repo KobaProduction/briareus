@@ -23,6 +23,7 @@ from common.owner_effect_authorization import (
 )
 from common.platform_db import PlatformDatabase
 from projects._control_proof_reader import TrustedControlActorSource
+from projects._current_state import membership_state, project_state, team_state
 from projects._persistence import ProjectRow
 from teams._persistence import TeamMembershipRow, TeamRow
 
@@ -77,7 +78,6 @@ class ControlEffectIssuer:
             if (
                 project is None
                 or project.lifecycle_status != "active"
-                or project.version < 1
                 or project.resource_revision < 0
                 or (project.owner_user_id is None) == (project.owner_team_id is None)
             ):
@@ -117,13 +117,15 @@ class ControlEffectIssuer:
             owner_id: UUID = team.id if team is not None else project.id
             revision = canonical_project_access_revision(
                 project_id=project.id,
-                project_version=project.version,
+                project_version=project_state(project),
                 resource_revision=project.resource_revision,
                 owner_user_id=project.owner_user_id,
                 owner_team_id=project.owner_team_id,
-                team_version=team.version if team is not None else None,
+                team_version=team_state(team) if team is not None else None,
                 team_resource_revision=team.resource_revision if team is not None else None,
-                membership_revision=membership.version if membership is not None else None,
+                membership_revision=membership_state(membership)
+                if membership is not None
+                else None,
                 actor_user_id=actor.user_id,
                 identity_credential_revision=actor.credential_version,
                 role=actor.role,
@@ -133,18 +135,18 @@ class ControlEffectIssuer:
                 owner="platform",
                 intent=intent,
                 issued_from_owner_db="briareus_platform",
-                state_version=project.version,
+                state_version=project_state(project),
                 revoke_epoch=project.resource_revision
-                + (team.version + team.resource_revision if team is not None else 0),
+                + (team.resource_revision if team is not None else 0),
                 authority_epoch=derive_source_epoch(
                     "platform",
                     str(project.id),
-                    project.version,
+                    project_state(project),
                     project.resource_revision,
                     str(owner_id),
-                    team.version if team is not None else 0,
+                    team_state(team) if team is not None else 0,
                     team.resource_revision if team is not None else 0,
-                    membership.version if membership is not None else 0,
+                    membership_state(membership) if membership is not None else 0,
                     actor.credential_version,
                     actor.role,
                     project.lifecycle_status,
