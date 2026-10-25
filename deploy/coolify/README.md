@@ -83,27 +83,21 @@ resource with a wildcard domain can create routing to gateway port 8000 automati
 public hostname may override `MCP_PUBLIC_BASE_URL`, `MCP_ALLOWED_HOSTS` and
 `MCP_ALLOWED_ORIGINS`; otherwise Coolify's gateway URL/FQDN generator supplies them.
 
-Machine/runtime compatibility inputs are also explicit Compose variables with portable defaults:
+Only genuine machine/runtime compatibility inputs remain operator overrides:
 
 ```text
 TZ=UTC
 LANG=C.UTF-8
 LC_ALL=C.UTF-8
-VALKEY_URL=redis://valkey:6379/0
-MANAGEMENT_URL=http://management:8000
-GITHUB_URL=http://github:8000/mcp
-GITLAB_URL=http://gitlab:8000/mcp
-FILES_URL=http://files:8000/mcp
-WEB_URL=http://web:8000/mcp
-ANALYSIS_URL=http://analysis:8000/mcp
-GHIDRA_URL=http://ghidra:8000/mcp
-TERMINAL_URL=http://terminal:8000/mcp
-OBSERVABILITY_URL=http://observability:8000/mcp
 GHIDRA_MCP_URL=http://bridge:8081/mcp
 ```
 
-These defaults still use Compose DNS inside one resource, but exposing them as deployment inputs
-lets Dev or a split-machine topology redirect individual private MCPs without rebuilding images.
+Internal Valkey, Management, GitHub, GitLab, Files, Web, Analysis, Ghidra,
+Terminal and Observability service addresses are fixed Compose DNS within the
+legacy single-host stack; they are not Coolify Application ENV inputs.
+`GHIDRA_MCP_URL` is different: it targets the native Ghidra MCP outside the
+local Compose stack and stays independently configurable.
+
 `TZ` should be set deliberately per deployment when server-side/browser local-time presentation
 matters; persistent data and protocol timestamps remain UTC-aware. Browser locale/display/viewport
 identity is source-owned for now and is intentionally not duplicated as deployment environment.

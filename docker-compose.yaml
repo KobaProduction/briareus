@@ -24,21 +24,21 @@ x-machine: &machine
   LC_ALL: ${LC_ALL:-C.UTF-8}
 
 x-cache-client: &cache-client
-  VALKEY_URL: ${VALKEY_URL:-redis://valkey:6379/0}
+  VALKEY_URL: redis://valkey:6379/0
 
 x-management-client: &management-client
-  MANAGEMENT_URL: ${MANAGEMENT_URL:-http://management:8000}
+  MANAGEMENT_URL: http://management:8000
   MANAGEMENT_SERVICE_TOKEN: ${MANAGEMENT_SERVICE_TOKEN:?}
 
 x-gateway-routing: &gateway-routing
-  GITHUB_URL: ${GITHUB_URL:-http://github:8000/mcp}
-  GITLAB_URL: ${GITLAB_URL:-http://gitlab:8000/mcp}
-  FILES_URL: ${FILES_URL:-http://files:8000/mcp}
-  WEB_URL: ${WEB_URL:-http://web:8000/mcp}
-  ANALYSIS_URL: ${ANALYSIS_URL:-http://analysis:8000/mcp}
-  GHIDRA_URL: ${GHIDRA_URL:-http://ghidra:8000/mcp}
-  TERMINAL_URL: ${TERMINAL_URL:-http://terminal:8000/mcp}
-  OBSERVABILITY_URL: ${OBSERVABILITY_URL:-http://observability:8000/mcp}
+  GITHUB_URL: http://github:8000/mcp
+  GITLAB_URL: http://gitlab:8000/mcp
+  FILES_URL: http://files:8000/mcp
+  WEB_URL: http://web:8000/mcp
+  ANALYSIS_URL: http://analysis:8000/mcp
+  GHIDRA_URL: http://ghidra:8000/mcp
+  TERMINAL_URL: http://terminal:8000/mcp
+  OBSERVABILITY_URL: http://observability:8000/mcp
 
 x-observability: &observability
   OTEL_SERVICE_NAME: ${OTEL_SERVICE_NAME:-mcp-bridge}
@@ -227,7 +227,7 @@ services:
       target: analysis
     environment:
       <<: [*machine, *cache-client, *management-client, *observability]
-      GHIDRA_URL: ${GHIDRA_URL:-http://ghidra:8000/mcp}
+      GHIDRA_URL: http://ghidra:8000/mcp
       ASGI_WORKERS: ${ANALYSIS_WORKERS:-1}
       ANALYSIS_WORKERS: ${ANALYSIS_WORKERS:-1}
       ANALYSIS_MEMORY_LIMIT: ${ANALYSIS_MEMORY_LIMIT:-2g}
