@@ -42,18 +42,10 @@ x-gateway-routing: &gateway-routing
 
 x-observability: &observability
   OTEL_SERVICE_NAME: ${OTEL_SERVICE_NAME:-mcp-bridge}
-  OTEL_SERVICE_VERSION: ${OTEL_SERVICE_VERSION:-0.1.0}
-  OTEL_SERVICE_INSTANCE_ID: ${OTEL_SERVICE_INSTANCE_ID:-}
   OTEL_ENVIRONMENT: ${OTEL_ENVIRONMENT:-production}
-  OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
-  OTEL_EXPORTER_OTLP_LOGS_ENDPOINT: ${OTEL_EXPORTER_OTLP_LOGS_ENDPOINT:-}
-  OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: ${OTEL_EXPORTER_OTLP_TRACES_ENDPOINT:-}
-  OTEL_EXPORTER_OTLP_METRICS_ENDPOINT: ${OTEL_EXPORTER_OTLP_METRICS_ENDPOINT:-}
-  OTEL_EXPORTER_OTLP_HEADERS: ${OTEL_EXPORTER_OTLP_HEADERS:-}
+  OTLP_ENDPOINT: ${OTLP_ENDPOINT:?}
+  OTLP_BEARER_TOKEN: ${OTLP_BEARER_TOKEN:?}
   OTEL_RESOURCE_ATTRIBUTES: ${OTEL_RESOURCE_ATTRIBUTES:-}
-  OTEL_EXPORTER_OTLP_TIMEOUT: ${OTEL_EXPORTER_OTLP_TIMEOUT:-10000}
-  OTEL_METRIC_EXPORT_INTERVAL: ${OTEL_METRIC_EXPORT_INTERVAL:-30000}
-  OTEL_LOG_LEVEL: ${OTEL_LOG_LEVEL:-INFO}
 
 x-private-service: &private-service
   <<: *runtime
@@ -196,14 +188,17 @@ services:
     environment:
       <<: [*cache-client, *management-client, *observability]
       TZ: ${TZ:-UTC}
+      WEB_MEMORY_LIMIT: ${WEB_MEMORY_LIMIT:-1792m}
+      WEB_MEMORY_SWAP_LIMIT: ${WEB_MEMORY_SWAP_LIMIT:-1792m}
+      WEB_SHM_SIZE: ${WEB_SHM_SIZE:-1gb}
     volumes:
       - terminal-workspace:/workspace
       - web-browser:/browser
     devices:
       - ${BROWSER_DRI_DEVICE:-/dev/dri/renderD128}:${BROWSER_DRI_DEVICE:-/dev/dri/renderD128}
-    shm_size: 1gb
-    mem_limit: 1792m
-    memswap_limit: 1792m
+    shm_size: ${WEB_SHM_SIZE:-1gb}
+    mem_limit: ${WEB_MEMORY_LIMIT:-1792m}
+    memswap_limit: ${WEB_MEMORY_SWAP_LIMIT:-1792m}
 
   terminal:
     <<: *private-service
@@ -233,6 +228,10 @@ services:
     environment:
       <<: [*machine, *cache-client, *management-client, *observability]
       GHIDRA_URL: ${GHIDRA_URL:-http://ghidra:8000/mcp}
+      ASGI_WORKERS: ${ANALYSIS_WORKERS:-1}
+      ANALYSIS_WORKERS: ${ANALYSIS_WORKERS:-1}
+      ANALYSIS_MEMORY_LIMIT: ${ANALYSIS_MEMORY_LIMIT:-2g}
+    mem_limit: ${ANALYSIS_MEMORY_LIMIT:-2g}
     volumes:
       - terminal-workspace:/workspace
 
@@ -244,6 +243,10 @@ services:
     environment:
       <<: [*machine, *cache-client, *management-client, *observability]
       GHIDRA_MCP_URL: ${GHIDRA_MCP_URL:-http://bridge:8081/mcp}
+      ASGI_WORKERS: ${GHIDRA_WORKERS:-1}
+      GHIDRA_WORKERS: ${GHIDRA_WORKERS:-1}
+      GHIDRA_MEMORY_LIMIT: ${GHIDRA_MEMORY_LIMIT:-2g}
+    mem_limit: ${GHIDRA_MEMORY_LIMIT:-2g}
     networks:
       - default
       - coolify

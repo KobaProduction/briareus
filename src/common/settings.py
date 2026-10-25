@@ -76,6 +76,7 @@ class AsgiServerSettings(ProcessSettings):
     app: str = Field("bridge.server:app", validation_alias="ASGI_APP")
     host: str = Field("0.0.0.0", validation_alias="ASGI_HOST")
     port: int = Field(8000, ge=1, le=65535, validation_alias="ASGI_PORT")
+    workers: int = Field(1, ge=1, le=8, validation_alias="ASGI_WORKERS")
     forwarded_allow_ips: str = Field(
         "127.0.0.1",
         validation_alias="ASGI_FORWARDED_ALLOW_IPS",
@@ -234,20 +235,8 @@ class ObservabilitySettings(ProcessSettings):
     service_version: str = Field("0.1.0", validation_alias="OTEL_SERVICE_VERSION")
     service_instance_id: str = Field("", validation_alias="OTEL_SERVICE_INSTANCE_ID")
     environment: str = Field("production", validation_alias="OTEL_ENVIRONMENT")
-    endpoint: str = Field("", validation_alias="OTEL_EXPORTER_OTLP_ENDPOINT")
-    logs_endpoint_override: str = Field(
-        "",
-        validation_alias="OTEL_EXPORTER_OTLP_LOGS_ENDPOINT",
-    )
-    traces_endpoint_override: str = Field(
-        "",
-        validation_alias="OTEL_EXPORTER_OTLP_TRACES_ENDPOINT",
-    )
-    metrics_endpoint_override: str = Field(
-        "",
-        validation_alias="OTEL_EXPORTER_OTLP_METRICS_ENDPOINT",
-    )
-    headers: str = Field("", validation_alias="OTEL_EXPORTER_OTLP_HEADERS")
+    endpoint: str = Field("", validation_alias="OTLP_ENDPOINT")
+    bearer_token: str = Field("", validation_alias="OTLP_BEARER_TOKEN")
     resource_attributes: str = Field("", validation_alias="OTEL_RESOURCE_ATTRIBUTES")
     log_level: str = Field("INFO", validation_alias="OTEL_LOG_LEVEL")
     timeout_ms: int = Field(
@@ -269,10 +258,7 @@ class ObservabilitySettings(ProcessSettings):
         "service_instance_id",
         "environment",
         "endpoint",
-        "logs_endpoint_override",
-        "traces_endpoint_override",
-        "metrics_endpoint_override",
-        "headers",
+        "bearer_token",
         "resource_attributes",
         "log_level",
         mode="before",
@@ -283,28 +269,15 @@ class ObservabilitySettings(ProcessSettings):
 
     @property
     def enabled(self) -> bool:
-        return bool(
-            self.endpoint
-            or self.logs_endpoint_override
-            or self.traces_endpoint_override
-            or self.metrics_endpoint_override
-        )
+        return bool(self.endpoint)
 
     @property
     def resolved_instance_id(self) -> str:
         return self.service_instance_id or getenv("HOSTNAME") or "unknown"
 
     def signal_endpoint(self, signal: str) -> str:
-        overrides = {
-            "logs": self.logs_endpoint_override,
-            "traces": self.traces_endpoint_override,
-            "metrics": self.metrics_endpoint_override,
-        }
-        if signal not in overrides:
+        if signal not in {"logs", "traces", "metrics"}:
             raise ValueError(f"unsupported OTLP signal: {signal}")
-        override = overrides[signal]
-        if override:
-            return override
         if not self.endpoint:
             return ""
         endpoint = self.endpoint.rstrip("/")

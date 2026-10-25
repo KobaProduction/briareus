@@ -254,6 +254,13 @@ def _logging_level(value: str) -> int:
     return level if isinstance(level, int) else logging.INFO
 
 
+def _otlp_bearer_headers(settings: ObservabilitySettings) -> dict[str, str]:
+    """Build one SDK header mapping without accepting legacy, preformatted headers."""
+    if not settings.bearer_token:
+        raise ValueError("OTLP_BEARER_TOKEN is required when OTLP_ENDPOINT is set")
+    return {"Authorization": f"Bearer {settings.bearer_token}"}
+
+
 class OpenTelemetrySink(ObservabilitySink):
     """Official OpenTelemetry SDK pipeline for logs, traces, and metrics."""
 
@@ -263,7 +270,7 @@ class OpenTelemetrySink(ObservabilitySink):
         self._shutdown = False
         self._attached_loggers: list[logging.Logger] = []
 
-        headers = _parse_key_values(settings.headers) or None
+        headers = _otlp_bearer_headers(settings)
         resource = Resource.create(_resource_attributes(settings, scope))
 
         self.logger_provider = LoggerProvider(resource=resource)

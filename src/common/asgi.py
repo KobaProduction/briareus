@@ -11,6 +11,7 @@ def main() -> None:
         settings.app,
         host=settings.host,
         port=settings.port,
+        workers=settings.workers,
         proxy_headers=True,
         forwarded_allow_ips=settings.forwarded_allow_ips,
     )
