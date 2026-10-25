@@ -5,7 +5,9 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
 
+from fastmcp import FastMCP
 from fastmcp.client.transports import StreamableHttpTransport
+from fastmcp.server.providers.proxy import FastMCPProxy
 
 from common.runtime_policy_contracts import BrowserRuntimePolicy
 from modules.web.external_browser_proxy import (
@@ -74,6 +76,31 @@ class ExternalBrowserSessionTests(unittest.TestCase):
             runtime._client = lease  # type: ignore[assignment]
             runtime._client_policy = self.policy
         return runtime
+
+    def test_disconnected_external_is_silent_during_internal_discovery(self) -> None:
+        async def scenario() -> None:
+            runtime = self.runtime()
+            parent = FastMCP("internal-browser")
+            parent.mount(runtime.server, namespace="external")
+            with patch("fastmcp.server.providers.aggregate.logger.warning") as warnings:
+                self.assertEqual(list(await parent.list_tools()), [])
+                self.assertEqual(list(await parent.list_resources()), [])
+                self.assertEqual(list(await parent.list_prompts()), [])
+                self.assertIsNone(await parent.get_tool("external_browser_tabs"))
+            warnings.assert_not_called()
+        asyncio.run(scenario())
+
+    def test_verified_external_session_exposes_proxy_again(self) -> None:
+        async def scenario() -> None:
+            runtime = self.runtime(_FakeLease())
+            runtime._tab_probe_state = "responded"
+            with patch.object(
+                FastMCPProxy, "list_tools", new_callable=unittest.mock.AsyncMock
+            ) as tools:
+                tools.return_value = []
+                self.assertEqual(await runtime.server.list_tools(), [])
+                tools.assert_awaited_once()
+        asyncio.run(scenario())
 
     def test_status_does_not_create_upstream_session(self) -> None:
         status = asyncio.run(self.runtime().status())

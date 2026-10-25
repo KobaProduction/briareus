@@ -96,6 +96,7 @@ class ManagementClient:
         query: dict[str, str] | None = None,
         payload: JsonObject | None = None,
         expect_body: bool = True,
+        fresh_connection: bool = False,
     ) -> JsonObject:
         body = None
         headers = {
@@ -114,6 +115,7 @@ class ManagementClient:
                 body=body,
                 headers=headers,
                 reconnect_retries=1 if normalized_method in {"GET", "HEAD"} else 0,
+                fresh_connection=fresh_connection,
             )
         except HttpTransportError as exc:
             raise ManagementClientError(f"management transport error: {exc}") from exc
@@ -219,6 +221,7 @@ class ManagementClient:
             "/internal/events/batch",
             payload=json_object(batch.model_dump(mode="json"), context="invocation event batch"),
             expect_body=False,
+            fresh_connection=True,
         )
 
     def terminal_runtime_policy(self) -> TerminalRuntimePolicy:

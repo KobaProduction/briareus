@@ -108,6 +108,7 @@ class PooledHttpTransport:
         headers: Mapping[str, str] | None = None,
         reconnect_retries: int = 1,
         retry_backoff_seconds: float = 0.0,
+        fresh_connection: bool = False,
     ) -> HttpTransportResponse:
         attempts = max(0, int(reconnect_retries)) + 1
         last_error: OSError | http.client.HTTPException | None = None
@@ -127,7 +128,11 @@ class PooledHttpTransport:
             total_pool_wait_ms = 0.0
             for attempt in range(attempts):
                 acquire_started = time.monotonic()
-                connection = self._acquire()
+                # Audit writes must not reuse idle sockets that an upstream
+                # keepalive timeout may already have closed (BrokenPipe).
+                connection = (
+                    self._connection_factory() if fresh_connection else self._acquire()
+                )
                 total_pool_wait_ms += (time.monotonic() - acquire_started) * 1000
                 try:
                     connection.request(
@@ -145,7 +150,10 @@ class PooledHttpTransport:
                         body=raw,
                         will_close=response.will_close,
                     )
-                    self._release(connection, reusable=not response.will_close)
+                    if fresh_connection:
+                        connection.close()
+                    else:
+                        self._release(connection, reusable=not response.will_close)
                     span.set_attribute("http.response.status_code", response.status)
                     span.set_attribute("http.response.body.size", len(raw))
                     span.set_attribute("http.retry.count", attempt)
@@ -155,7 +163,10 @@ class PooledHttpTransport:
                     return result
                 except (OSError, http.client.HTTPException) as exc:
                     last_error = exc
-                    self._release(connection, reusable=False)
+                    if fresh_connection:
+                        connection.close()
+                    else:
+                        self._release(connection, reusable=False)
                     if attempt + 1 >= attempts:
                         break
                     if retry_backoff_seconds > 0:

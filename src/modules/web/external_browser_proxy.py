@@ -11,7 +11,11 @@ from urllib.parse import urlsplit
 
 from fastmcp import FastMCP
 from fastmcp.client.transports import StreamableHttpTransport
+from fastmcp.prompts import Prompt
+from fastmcp.resources import Resource, ResourceTemplate
 from fastmcp.server.providers.proxy import FastMCPProxy, ProxyClient
+from fastmcp.tools import Tool
+from fastmcp.utilities.versions import VersionSpec
 
 from common.models import JsonObject
 from common.runtime_policy_contracts import BrowserRuntimePolicy
@@ -133,6 +137,64 @@ class _PersistentPlaywrightProxyClient(ProxyClient[StreamableHttpTransport]):
                 logger.info("External Playwright MCP session disconnected")
 
 
+class _OptionalExternalMCP(FastMCPProxy):
+    """Hide an intentionally disconnected upstream from routine MCP discovery."""
+
+    def __init__(self, *, ready: Callable[[], bool], **kwargs: object) -> None:
+        self._ready = ready
+        super().__init__(**kwargs)
+
+    async def list_tools(self, *, run_middleware: bool = True) -> list[Tool]:
+        if not self._ready():
+            return []
+        return list(await super().list_tools(run_middleware=run_middleware))
+
+    async def get_tool(
+        self, name: str, version: VersionSpec | None = None
+    ) -> Tool | None:
+        if not self._ready():
+            return None
+        return await super().get_tool(name, version)
+
+    async def list_resources(self, *, run_middleware: bool = True) -> list[Resource]:
+        if not self._ready():
+            return []
+        return list(await super().list_resources(run_middleware=run_middleware))
+
+    async def list_resource_templates(
+        self, *, run_middleware: bool = True
+    ) -> list[ResourceTemplate]:
+        if not self._ready():
+            return []
+        return list(await super().list_resource_templates(run_middleware=run_middleware))
+
+    async def list_prompts(self, *, run_middleware: bool = True) -> list[Prompt]:
+        if not self._ready():
+            return []
+        return list(await super().list_prompts(run_middleware=run_middleware))
+
+    async def get_resource(
+        self, uri: str, version: VersionSpec | None = None
+    ) -> Resource | None:
+        if not self._ready():
+            return None
+        return await super().get_resource(uri, version)
+
+    async def get_resource_template(
+        self, uri: str, version: VersionSpec | None = None
+    ) -> ResourceTemplate | None:
+        if not self._ready():
+            return None
+        return await super().get_resource_template(uri, version)
+
+    async def get_prompt(
+        self, name: str, version: VersionSpec | None = None
+    ) -> Prompt | None:
+        if not self._ready():
+            return None
+        return await super().get_prompt(name, version)
+
+
 class ExternalBrowserProxyRuntime:
     """Dynamic proxy to the official Playwright MCP configured by Admin API policy."""
 
@@ -163,7 +225,12 @@ class ExternalBrowserProxyRuntime:
                 )
             return await client.acquire()
 
-        self.server: FastMCP[Any] = FastMCPProxy(
+        self.server: FastMCP[Any] = _OptionalExternalMCP(
+            ready=lambda: bool(
+                self._client is not None
+                and self._client.connected
+                and self._tab_probe_state == "responded"
+            ),
             client_factory=client_factory,
             name="external-playwright-upstream",
             provider_error_strategy="warn",
