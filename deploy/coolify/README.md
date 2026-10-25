@@ -60,39 +60,23 @@ Auth owns GitHub OAuth and token issuance. Auth and gateway share the FastMCP JW
 key and allowed GitHub user list so gateway can verify bearer tokens locally. GitHub
 client ID/secret remain auth-only.
 
-Coolify is now the bootstrap authority for values it can safely generate. The Git-backed
-Compose definition uses Coolify `SERVICE_*` generators for internal random values and uses
-`${VAR:?}` only for externally-issued values that Coolify cannot invent. Generated values are
-stored by Coolify and reused by every service that references the same variable name.
+This existing legacy deployment now requires stable, previously provisioned
+Management and GitHub OAuth credentials. The Compose source uses `${VAR:?}`
+for the five protected secrets: `MANAGEMENT_ENCRYPTION_KEY`,
+`MANAGEMENT_SERVICE_TOKEN`, `MANAGEMENT_ADMIN_PASSWORD`,
+`MANAGEMENT_SESSION_SECRET` and `GITHUB_OAUTH_JWT_SIGNING_KEY`,
+as well as the externally issued `GITHUB_OAUTH_CLIENT_ID`,
+`GITHUB_OAUTH_CLIENT_SECRET` and allowed-user contract. Set the existing
+Coolify Application variables to their approved Shared references; never
+regenerate these values when updating an existing Management/Auth volume.
 
-Fresh resources therefore need only these external OAuth inputs before first deployment:
-
-```text
-GITHUB_OAUTH_CLIENT_ID=...
-GITHUB_OAUTH_CLIENT_SECRET=...
-GITHUB_OAUTH_ALLOWED_USERS=...
-```
-
-The following values are generated automatically unless explicitly overridden:
-
-```text
-MANAGEMENT_ENCRYPTION_KEY       <- SERVICE_REALBASE64_32_MANAGEMENT_ENCRYPTION_KEY
-MANAGEMENT_SERVICE_TOKEN        <- SERVICE_REALBASE64_64_MANAGEMENT_SERVICE_TOKEN
-MANAGEMENT_ADMIN_USERNAME       <- admin (overrideable)
-MANAGEMENT_ADMIN_PASSWORD       <- SERVICE_PASSWORD_64_MANAGEMENT_ADMIN
-MANAGEMENT_SESSION_SECRET       <- SERVICE_REALBASE64_64_MANAGEMENT_SESSION_SECRET
-GITHUB_OAUTH_JWT_SIGNING_KEY    <- SERVICE_REALBASE64_64_GITHUB_OAUTH_JWT_SIGNING_KEY
-MCP_PUBLIC_BASE_URL             <- SERVICE_URL_GATEWAY_8000
-MCP_ALLOWED_HOSTS               <- SERVICE_FQDN_GATEWAY_8000
-MCP_ALLOWED_ORIGINS             <- SERVICE_URL_GATEWAY_8000
-```
-
-`SERVICE_REALBASE64_32_*` is suitable for the Management Fernet key because it encodes exactly
-32 random bytes. Generated secrets are a **new-resource bootstrap** feature, not a migration
-mechanism. When attaching an existing Management volume/database, always set the original
-`MANAGEMENT_ENCRYPTION_KEY` explicitly before deployment; replacing it makes previously encrypted
-provider credentials unreadable. The same stability rule applies to the JWT signing key and
-session secret when continuity of issued tokens/sessions matters.
+The only telemetry credentials are `OTLP_ENDPOINT` and `OTLP_BEARER_TOKEN`,
+read from protected Team Shared references. Python creates the Bearer header.
+The legacy generated `SERVICE_REALBASE64_*`/`SERVICE_PASSWORD_*` secret
+fallbacks are no longer used by this Compose and can be removed from
+obsolete Application parser entries after a confirmed deploy and rollback plan.
+Coolify-generated `SERVICE_URL_GATEWAY_8000` and
+`SERVICE_FQDN_GATEWAY_8000` continue to own the public gateway URL/domain.
 
 The `gateway` service explicitly declares `SERVICE_URL_GATEWAY_8000: /`, so a fresh Coolify
 resource with a wildcard domain can create routing to gateway port 8000 automatically. A custom
